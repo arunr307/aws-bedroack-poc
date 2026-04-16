@@ -16,10 +16,11 @@ AI use cases via a clean REST API — without any model-specific payload formats
 6. [API — Streaming Chat](#api--streaming-chat)
 7. [API — Text Summarization](#api--text-summarization)
 8. [API — Embeddings](#api--embeddings)
-9. [Project structure](#project-structure)
-10. [Running tests](#running-tests)
-11. [Supported Bedrock models](#supported-bedrock-models)
-12. [Roadmap](#roadmap)
+9. [API — RAG (Retrieval-Augmented Generation)](#api--rag-retrieval-augmented-generation)
+10. [Project structure](#project-structure)
+11. [Running tests](#running-tests)
+12. [Supported Bedrock models](#supported-bedrock-models)
+13. [Roadmap](#roadmap)
 
 ---
 
@@ -36,6 +37,9 @@ Client (curl / Postman / UI)
 │  ChatController        ──▶  StreamingChatService         │
 │  SummarizationController──▶  SummarizationService        │
 │  EmbeddingController   ──▶  EmbeddingService             │
+│  RagController         ──▶  RagService                   │
+│                              │   └──▶ EmbeddingService   │
+│                              └──▶ DocumentStore          │
 │                                    │                     │
 │                     BedrockRuntimeClient  (sync)         │
 │                     BedrockRuntimeAsyncClient (streaming)│
@@ -44,7 +48,8 @@ Client (curl / Postman / UI)
               ┌─────────────────┼──────────────────┐
               ▼                 ▼                  ▼
        Converse API       ConverseStream      InvokeModel API
-    (Chat, Summarize)     (Stream Chat)      (Embeddings)
+    (Chat, Summarize,     (Stream Chat)      (Embeddings, RAG)
+       RAG generation)
               │                 │                  │
               └─────────────────┼──────────────────┘
                                 ▼
@@ -53,9 +58,9 @@ Client (curl / Postman / UI)
 
 | API | Bedrock call | Used by |
 |-----|-------------|---------|
-| Converse API | `client.converse()` | Chat, Summarization |
+| Converse API | `client.converse()` | Chat, Summarization, RAG generation |
 | ConverseStream API | `asyncClient.converseStream()` | Streaming Chat |
-| InvokeModel API | `client.invokeModel()` | Embeddings (raw JSON in/out) |
+| InvokeModel API | `client.invokeModel()` | Embeddings, RAG chunk embedding |
 
 ---
 
@@ -626,6 +631,340 @@ curl -X POST http://localhost:8080/api/embeddings/search \
 
 ---
 
+## API — RAG (Retrieval-Augmented Generation)
+
+RAG grounds a language model's answers in your own documents — eliminating
+hallucination by constraining the model to only what is in the provided context.
+
+This implementation is a **DIY in-memory pipeline** — no Bedrock Knowledge Bases,
+no vector database, no extra infrastructure. Everything runs inside the Spring Boot
+process, making it ideal for POCs and small corpora (hundreds of documents).
+
+### How it works
+
+```
+INGEST                          QUERY
+──────                          ─────
+documents                       question
+   │                               │
+   ▼                               ▼
+split into overlapping          embed question
+word-based chunks               (Titan Embed V2)
+   │                               │
+   ▼                               ▼
+embed each chunk                find top-K similar chunks
+(Titan Embed V2)                (cosine similarity scan)
+   │                               │
+   ▼                               ▼
+store chunks + vectors          inject chunks as numbered context
+(in-memory ConcurrentHashMap)   into system prompt
+                                   │
+                                   ▼
+                                Bedrock Converse API
+                                (Nova Lite by default)
+                                   │
+                                   ▼
+                                answer + source citations
+```
+
+### Local setup for RAG
+
+Both **Amazon Nova Lite** (generation) and **Titan Embed Text V2** (embedding)
+must be enabled in your AWS account:
+
+1. Open **AWS Console → Bedrock → Model access → Manage model access**
+2. Tick **Amazon Nova Lite** and **Amazon Titan Embed Text V2**
+3. Click **Save changes**
+
+---
+
+### `POST /api/rag/ingest`
+
+Chunks, embeds, and stores one or more documents in the in-memory knowledge base.
+Returns IDs for each document — use them to delete individual documents later.
+
+#### Request
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `documents` | `DocumentInput[]` | Yes | — | Max 50 documents per request |
+| `chunkSize` | `integer` | No | `200` | Target words per chunk |
+| `chunkOverlap` | `integer` | No | `20` | Words shared between consecutive chunks |
+
+`DocumentInput` shape: `{ "title": "...", "content": "..." }` (content max 500 000 chars)
+
+**Chunking tip:** Smaller chunks (100–150 words) improve retrieval precision;
+larger chunks (300–400 words) preserve more context per result. Overlap (10–15%
+of `chunkSize`) prevents context loss at chunk boundaries.
+
+#### Response
+
+```json
+{
+  "documentIds": ["d1a2b3c4-...", "e5f6a7b8-..."],
+  "ingestedDocuments": 2,
+  "totalChunks": 18,
+  "embeddingModel": "amazon.titan-embed-text-v2:0",
+  "timestamp": "2025-04-17T09:00:00Z"
+}
+```
+
+#### Examples
+
+**Ingest a single document:**
+```bash
+curl -X POST http://localhost:8080/api/rag/ingest \
+     -H "Content-Type: application/json" \
+     -d '{
+           "documents": [
+             {
+               "title": "AWS Lambda Overview",
+               "content": "AWS Lambda is a serverless, event-driven compute service that lets you run code for virtually any type of application or backend service without provisioning or managing servers. Lambda runs your code on a high-availability compute infrastructure and performs all of the administration of the compute resources, including server and operating system maintenance, capacity provisioning and automatic scaling, and logging."
+             }
+           ]
+         }'
+```
+
+**Ingest multiple documents with custom chunking:**
+```bash
+curl -X POST http://localhost:8080/api/rag/ingest \
+     -H "Content-Type: application/json" \
+     -d '{
+           "documents": [
+             { "title": "Lambda Overview", "content": "AWS Lambda is serverless compute..." },
+             { "title": "ECS Overview",    "content": "Amazon ECS is a container service..." },
+             { "title": "EKS Overview",    "content": "Amazon EKS is managed Kubernetes..." }
+           ],
+           "chunkSize": 150,
+           "chunkOverlap": 15
+         }'
+```
+
+**Ingest a local file:**
+```bash
+curl -X POST http://localhost:8080/api/rag/ingest \
+     -H "Content-Type: application/json" \
+     -d "{
+           \"documents\": [
+             { \"title\": \"My Document\", \"content\": $(jq -Rs . < my-document.txt) }
+           ]
+         }"
+```
+
+---
+
+### `POST /api/rag/query`
+
+Answers a question using the ingested knowledge base.
+The model is constrained to only information in the retrieved context — it will
+say "I don't know" rather than fabricating an answer not in your documents.
+
+#### Request
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `question` | `string` | Yes | — | The question to answer (max 10 000 chars) |
+| `topK` | `integer` | No | `5` | Max chunks to retrieve as context |
+| `minScore` | `double` | No | `0.5` | Minimum cosine similarity (0–1) |
+| `modelId` | `string` | No | config | Override generation model |
+| `systemPrompt` | `string` | No | built-in grounding prompt | Custom system prompt |
+
+**Tuning retrieval:**
+- Raise `minScore` (e.g. `0.7`) to get only highly relevant chunks — reduces noise
+- Lower `minScore` (e.g. `0.3`) to cast a wider net — useful for broad questions
+- Increase `topK` for richer context at the cost of more tokens
+
+#### Response
+
+```json
+{
+  "question": "What is AWS Lambda?",
+  "answer": "AWS Lambda is a serverless, event-driven compute service that lets you run code without provisioning or managing servers. It runs your code on high-availability infrastructure and handles all administration automatically.",
+  "sources": [
+    {
+      "documentId": "d1a2b3c4-...",
+      "title": "AWS Lambda Overview",
+      "chunkText": "AWS Lambda is a serverless, event-driven compute service...",
+      "score": 0.9421,
+      "chunkIndex": 0
+    }
+  ],
+  "retrievedChunks": 1,
+  "generationModelId": "amazon.nova-lite-v1:0",
+  "embeddingModelId": "amazon.titan-embed-text-v2:0",
+  "usage": { "inputTokens": 540, "outputTokens": 82, "totalTokens": 622 },
+  "timestamp": "2025-04-17T09:00:00Z"
+}
+```
+
+#### Examples
+
+**Basic question:**
+```bash
+curl -X POST http://localhost:8080/api/rag/query \
+     -H "Content-Type: application/json" \
+     -d '{ "question": "What is AWS Lambda?" }'
+```
+
+**With retrieval tuning:**
+```bash
+curl -X POST http://localhost:8080/api/rag/query \
+     -H "Content-Type: application/json" \
+     -d '{
+           "question": "How does Lambda handle scaling?",
+           "topK": 8,
+           "minScore": 0.6
+         }'
+```
+
+**With a custom system prompt:**
+```bash
+curl -X POST http://localhost:8080/api/rag/query \
+     -H "Content-Type: application/json" \
+     -d '{
+           "question": "What are the cost implications of Lambda vs ECS?",
+           "systemPrompt": "You are an AWS cost optimization expert. Be precise and cite pricing details from the context.",
+           "topK": 5
+         }'
+```
+
+**Using a more capable model:**
+```bash
+curl -X POST http://localhost:8080/api/rag/query \
+     -H "Content-Type: application/json" \
+     -d '{
+           "question": "Compare Lambda, ECS, and EKS for a microservices architecture.",
+           "modelId": "amazon.nova-pro-v1:0",
+           "topK": 10,
+           "minScore": 0.4
+         }'
+```
+
+---
+
+### `GET /api/rag/documents`
+
+Lists all documents currently in the knowledge base (metadata only — no chunk vectors).
+
+```bash
+curl http://localhost:8080/api/rag/documents
+```
+
+```json
+[
+  {
+    "id": "d1a2b3c4-...",
+    "title": "AWS Lambda Overview",
+    "chunkCount": 6,
+    "createdAt": "2025-04-17T09:00:00Z"
+  },
+  {
+    "id": "e5f6a7b8-...",
+    "title": "ECS Overview",
+    "chunkCount": 4,
+    "createdAt": "2025-04-17T09:01:00Z"
+  }
+]
+```
+
+---
+
+### `DELETE /api/rag/documents/{id}`
+
+Removes a single document (and all its chunks) from the knowledge base.
+
+```bash
+curl -X DELETE http://localhost:8080/api/rag/documents/d1a2b3c4-...
+```
+
+```json
+{
+  "id": "d1a2b3c4-...",
+  "removed": true,
+  "message": "Document removed from the knowledge base"
+}
+```
+
+Returns `404` if the document ID is not found.
+
+---
+
+### `DELETE /api/rag/documents`
+
+Clears the entire knowledge base. Use with care — this is irreversible.
+
+```bash
+curl -X DELETE http://localhost:8080/api/rag/documents
+```
+
+```json
+{
+  "cleared": true,
+  "documentsRemoved": 3,
+  "chunksRemoved": 22,
+  "message": "Knowledge base cleared"
+}
+```
+
+---
+
+### `GET /api/rag/health`
+
+Returns store statistics — use this to verify that ingest succeeded before querying.
+
+```bash
+curl http://localhost:8080/api/rag/health
+```
+
+```json
+{
+  "status": "UP",
+  "documentCount": 3,
+  "chunkCount": 22,
+  "timestamp": "2025-04-17T09:05:00Z"
+}
+```
+
+---
+
+### End-to-end walkthrough
+
+```bash
+# 1. Ingest two documents
+DOC_IDS=$(curl -s -X POST http://localhost:8080/api/rag/ingest \
+  -H "Content-Type: application/json" \
+  -d '{
+        "documents": [
+          {
+            "title": "AWS Lambda",
+            "content": "AWS Lambda is serverless compute. It runs code triggered by events such as HTTP requests via API Gateway, S3 uploads, DynamoDB streams, or custom events. Lambda automatically scales from zero to thousands of concurrent invocations. Pricing is per 100ms of execution time and number of requests — you pay nothing when your code is not running."
+          },
+          {
+            "title": "Amazon ECS",
+            "content": "Amazon Elastic Container Service (ECS) is a fully managed container orchestration service. It supports Docker containers and integrates with AWS Fargate for serverless containers (no EC2 management) or EC2 launch type for full control. ECS is a good fit for long-running services, batch workloads, and microservices that require persistent connections."
+          }
+        ],
+        "chunkSize": 50,
+        "chunkOverlap": 10
+      }' | jq -r '.documentIds[]')
+
+echo "Ingested document IDs: $DOC_IDS"
+
+# 2. Check the store
+curl http://localhost:8080/api/rag/health
+
+# 3. Ask a question
+curl -s -X POST http://localhost:8080/api/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{ "question": "When should I use Lambda vs ECS?", "topK": 4 }' \
+  | jq '{answer, sources: [.sources[] | {title, score}]}'
+
+# 4. Clean up
+curl -X DELETE http://localhost:8080/api/rag/documents
+```
+
+---
+
 ## Project structure
 
 ```
@@ -640,12 +979,15 @@ aws-bedrock-poc/
 │   │   │   ├── controller/
 │   │   │   │   ├── ChatController.java             # /api/chat  &  /api/chat/stream
 │   │   │   │   ├── SummarizationController.java    # /api/summarize
-│   │   │   │   └── EmbeddingController.java        # /api/embeddings/*
+│   │   │   │   ├── EmbeddingController.java        # /api/embeddings/*
+│   │   │   │   └── RagController.java              # /api/rag/*
 │   │   │   ├── service/
 │   │   │   │   ├── ChatService.java                # Blocking Converse API
 │   │   │   │   ├── StreamingChatService.java       # ConverseStream + SseEmitter
 │   │   │   │   ├── SummarizationService.java       # Style-guided summarization
-│   │   │   │   └── EmbeddingService.java           # InvokeModel + cosine similarity
+│   │   │   │   ├── EmbeddingService.java           # InvokeModel + cosine similarity
+│   │   │   │   ├── RagService.java                 # RAG pipeline: chunk → embed → retrieve → generate
+│   │   │   │   └── DocumentStore.java              # Thread-safe in-memory vector store
 │   │   │   ├── model/
 │   │   │   │   ├── ChatMessage.java                # role + content pair
 │   │   │   │   ├── ChatRequest.java                # Chat POST body
@@ -658,7 +1000,11 @@ aws-bedrock-poc/
 │   │   │   │   ├── SimilarityRequest.java          # Two texts to compare
 │   │   │   │   ├── SimilarityResponse.java         # Cosine score + interpretation
 │   │   │   │   ├── SemanticSearchRequest.java      # Query + document corpus
-│   │   │   │   └── SemanticSearchResponse.java     # Ranked results
+│   │   │   │   ├── SemanticSearchResponse.java     # Ranked results
+│   │   │   │   ├── IngestRequest.java              # RAG: batch document ingest
+│   │   │   │   ├── IngestResponse.java             # RAG: ingest result with doc IDs
+│   │   │   │   ├── RagQueryRequest.java            # RAG: question + retrieval params
+│   │   │   │   └── RagQueryResponse.java           # RAG: answer + sources + token usage
 │   │   │   └── exception/
 │   │   │       ├── BedrockException.java           # Bedrock API errors
 │   │   │       └── GlobalExceptionHandler.java     # RFC 7807 error responses
@@ -668,7 +1014,8 @@ aws-bedrock-poc/
 │       └── java/com/example/bedrock/
 │           ├── ChatServiceTest.java                # 4 tests — Chat (mocked)
 │           ├── SummarizationServiceTest.java       # 10 tests — Summarization (mocked)
-│           └── EmbeddingServiceTest.java           # 8 tests — Embeddings (mocked)
+│           ├── EmbeddingServiceTest.java           # 8 tests — Embeddings (mocked)
+│           └── RagServiceTest.java                 # 11 tests — RAG (mocked)
 ├── .vscode/
 │   └── launch.json                                 # AWS credentials (gitignored)
 ├── .gitignore
@@ -687,7 +1034,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 mvn test
 All tests mock the Bedrock client — no AWS credentials or network access required.
 
 ```
-Tests run: 22, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 33, Failures: 0, Errors: 0, Skipped: 0
 ```
 
 ---
@@ -724,9 +1071,10 @@ Tests run: 22, Failures: 0, Errors: 0, Skipped: 0
 | 2 | Streaming Chat (SSE) | ✅ Done |
 | 3 | Text Summarization (5 styles) | ✅ Done |
 | 4 | Embeddings + Semantic Search | ✅ Done |
-| 5 | Document Analysis (entities, sentiment, classification) | Planned |
-| 6 | Code Generation | Planned |
-| 7 | RAG with Bedrock Knowledge Bases | Planned |
-| 8 | Agents with tool / function calling | Planned |
-| 9 | Image Generation | Planned |
-| 10 | Prompt Flows | Planned |
+| 5 | RAG — DIY in-memory pipeline | ✅ Done |
+| 6 | Document Analysis (entities, sentiment, classification) | Planned |
+| 7 | Code Generation | Planned |
+| 8 | RAG with Bedrock Knowledge Bases (managed) | Planned |
+| 9 | Agents with tool / function calling | Planned |
+| 10 | Image Generation | Planned |
+| 11 | Prompt Flows | Planned |

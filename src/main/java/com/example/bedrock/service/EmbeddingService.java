@@ -181,6 +181,29 @@ public class EmbeddingService {
                 .build();
     }
 
+    // ── Package-level helper used by RagService ───────────────────────────────
+
+    /**
+     * Embeds a single text using the configured defaults.
+     * Intended for internal use by {@link RagService} — avoids duplicating
+     * the InvokeModel call logic.
+     *
+     * @param text text to embed
+     * @return normalised embedding vector
+     */
+    List<Double> embedText(String text) {
+        BedrockProperties.Embedding cfg = properties.getBedrock().getEmbedding();
+        return invokeEmbedding(text, cfg.getModelId(), cfg.getDimensions(), cfg.isNormalize())
+                .embedding();
+    }
+
+    /**
+     * Cosine similarity between two vectors — exposed for use by {@link RagService}.
+     */
+    double similarity(List<Double> a, List<Double> b) {
+        return cosineSimilarity(a, b, properties.getBedrock().getEmbedding().isNormalize());
+    }
+
     // ── Bedrock invocation ────────────────────────────────────────────────────
 
     /**
