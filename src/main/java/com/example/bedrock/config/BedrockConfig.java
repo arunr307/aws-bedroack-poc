@@ -4,12 +4,16 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.bedrockruntime.BedrockRuntimeAsyncClient;
 import software.amazon.awssdk.services.bedrockruntime.BedrockRuntimeClient;
+
+import java.util.concurrent.Executor;
 
 /**
  * Spring configuration that produces a {@link BedrockRuntimeClient} bean.
@@ -48,6 +52,49 @@ public class BedrockConfig {
                 .region(region)
                 .credentialsProvider(credentialsProvider)
                 .build();
+    }
+
+    /**
+     * Async Bedrock client used exclusively by {@link com.example.bedrock.service.StreamingChatService}.
+     *
+     * <p>The async client is required for {@code converseStream()} — the sync client does not
+     * expose a streaming variant. We call {@code .join()} on the returned
+     * {@link java.util.concurrent.CompletableFuture} inside the dedicated
+     * {@code streamingExecutor} thread pool, so the async completion is transparent to callers.
+     */
+    @Bean
+    public BedrockRuntimeAsyncClient bedrockRuntimeAsyncClient() {
+        AwsCredentialsProvider credentialsProvider = resolveCredentialsProvider();
+        Region region = Region.of(properties.getRegion());
+
+        log.info("Initialising BedrockRuntimeAsyncClient — region={}", region);
+
+        return BedrockRuntimeAsyncClient.builder()
+                .region(region)
+                .credentialsProvider(credentialsProvider)
+                .build();
+    }
+
+    /**
+     * Thread pool used by the streaming chat endpoint to run {@code converseStream()}
+     * calls off the Tomcat request thread.
+     *
+     * <p>{@code converseStream()} is blocking — it does not return until the model
+     * finishes generating. Running it on a Tomcat thread would exhaust the thread pool
+     * under concurrent load. This dedicated executor keeps Tomcat threads free.
+     *
+     * <p>Sizing: 10 core threads handles 10 simultaneous streaming requests; the queue
+     * absorbs short bursts beyond that. Adjust via {@code application.yml} if needed.
+     */
+    @Bean(name = "streamingExecutor")
+    public Executor streamingExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(10);
+        executor.setMaxPoolSize(20);
+        executor.setQueueCapacity(50);
+        executor.setThreadNamePrefix("bedrock-stream-");
+        executor.initialize();
+        return executor;
     }
 
     /**

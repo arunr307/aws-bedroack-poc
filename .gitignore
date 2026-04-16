@@ -15,3 +15,5 @@ target/
 # Environment files
 .env
 *.env.local
+/.vscode/
+/.github/

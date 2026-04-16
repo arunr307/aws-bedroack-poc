@@ -3,11 +3,16 @@ package com.example.bedrock.controller;
 import com.example.bedrock.model.ChatRequest;
 import com.example.bedrock.model.ChatResponse;
 import com.example.bedrock.service.ChatService;
+import com.example.bedrock.service.StreamingChatService;
 import jakarta.validation.Valid;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import java.util.concurrent.Executor;
 
 /**
  * REST controller exposing the AWS Bedrock Chat API.
@@ -18,7 +23,8 @@ import org.springframework.web.bind.annotation.*;
  * <h2>Endpoints</h2>
  * <table border="1">
  *   <tr><th>Method</th><th>Path</th><th>Description</th></tr>
- *   <tr><td>POST</td><td>/api/chat</td><td>Send a message (stateless or multi-turn)</td></tr>
+ *   <tr><td>POST</td><td>/api/chat</td><td>Blocking chat — full reply in one JSON response</td></tr>
+ *   <tr><td>POST</td><td>/api/chat/stream</td><td>Streaming chat — tokens via Server-Sent Events</td></tr>
  *   <tr><td>GET</td><td>/api/chat/health</td><td>Simple health-check for the chat service</td></tr>
  * </table>
  *
@@ -45,10 +51,20 @@ import org.springframework.web.bind.annotation.*;
 @Slf4j
 @RestController
 @RequestMapping("/api/chat")
-@RequiredArgsConstructor
 public class ChatController {
 
-    private final ChatService chatService;
+    private final ChatService          chatService;
+    private final StreamingChatService streamingChatService;
+    private final Executor             streamingExecutor;
+
+    public ChatController(
+            ChatService chatService,
+            StreamingChatService streamingChatService,
+            @Qualifier("streamingExecutor") Executor streamingExecutor) {
+        this.chatService          = chatService;
+        this.streamingChatService = streamingChatService;
+        this.streamingExecutor    = streamingExecutor;
+    }
 
     /**
      * Send a message to Amazon Bedrock and receive the model's reply.
@@ -75,6 +91,50 @@ public class ChatController {
                 response.getUsage().getOutputTokens());
 
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Stream a chat response token-by-token using Server-Sent Events (SSE).
+     *
+     * <p>The HTTP connection stays open while the model generates its reply.
+     * Each token is pushed as a {@code data:} SSE event as soon as it arrives
+     * from Bedrock, giving the user a real-time "typing" experience.
+     *
+     * <h2>Event format</h2>
+     * <pre>{@code
+     * data: {"token":"Hello","done":false}
+     * data: {"token":", how can I help?","done":false}
+     * data: {"token":"","done":true,"modelId":"amazon.nova-lite-v1:0",
+     *         "usage":{"inputTokens":10,"outputTokens":7,"totalTokens":17}}
+     * }</pre>
+     *
+     * <h2>Example</h2>
+     * <pre>{@code
+     * curl -N -X POST http://localhost:8080/api/chat/stream \
+     *      -H "Content-Type: application/json" \
+     *      -d '{ "message": "Explain AWS Lambda in simple terms." }'
+     * }</pre>
+     *
+     * @param request the chat request (same schema as {@code POST /api/chat})
+     * @return an SSE stream of {@link com.example.bedrock.model.StreamToken} events
+     */
+    @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamChat(@Valid @RequestBody ChatRequest request) {
+        log.info("Streaming chat request received — messageLength={}", request.getMessage().length());
+
+        // 60-second timeout — increase for very long responses
+        SseEmitter emitter = new SseEmitter(60_000L);
+
+        streamingExecutor.execute(() -> {
+            try {
+                streamingChatService.stream(request, emitter);
+            } catch (Exception ex) {
+                log.error("Unexpected error during streaming", ex);
+                emitter.completeWithError(ex);
+            }
+        });
+
+        return emitter;
     }
 
     /**
