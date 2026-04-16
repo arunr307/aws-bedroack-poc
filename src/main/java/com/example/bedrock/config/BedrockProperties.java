@@ -46,7 +46,7 @@ public class BedrockProperties {
 
     @Data
     public static class Bedrock {
-        /** Bedrock model ID (e.g. {@code anthropic.claude-3-5-sonnet-20241022-v2:0}). */
+        /** Bedrock model ID (e.g. {@code amazon.nova-lite-v1:0}). */
         private String modelId;
 
         /** Maximum number of tokens the model may generate per response. */
@@ -60,5 +60,30 @@ public class BedrockProperties {
          * when using the multi-turn endpoint. Set to 0 for fully stateless mode.
          */
         private int maxConversationTurns = 10;
+
+        /** Embedding-specific settings. */
+        private Embedding embedding = new Embedding();
+    }
+
+    @Data
+    public static class Embedding {
+        /**
+         * Bedrock model used to generate embeddings.
+         * Titan Embed Text V2 supports variable dimensions and normalisation.
+         */
+        private String modelId = "amazon.titan-embed-text-v2:0";
+
+        /**
+         * Vector dimensionality produced by the embedding model.
+         * Titan Embed Text V2 supports: {@code 256}, {@code 512}, {@code 1024}.
+         * Larger dimensions capture more nuance but cost more to store and compare.
+         */
+        private int dimensions = 1024;
+
+        /**
+         * Whether to normalise the output vector to unit length (L2 norm = 1).
+         * Recommended {@code true} — enables direct dot-product as cosine similarity.
+         */
+        private boolean normalize = true;
     }
 }

@@ -40,6 +40,14 @@ aws:
     # How many previous messages to carry in a conversation (0 = stateless)
     max-conversation-turns: 10
 
+    # ── Embedding settings ────────────────────────────────────────
+    embedding:
+      # Titan Embed Text V2 — no Anthropic form required.
+      # Supports dimensions: 256 (compact), 512 (balanced), 1024 (richest)
+      model-id: amazon.titan-embed-text-v2:0
+      dimensions: 1024
+      normalize: true   # L2-normalise vectors — enables dot-product as cosine similarity
+
 # ─────────────────────────────────────────────────────────────
 # Actuator — expose /actuator/health for readiness checks
 # ─────────────────────────────────────────────────────────────
