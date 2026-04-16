@@ -1,0 +1,58 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: aws-bedrock-poc
+
+# ─────────────────────────────────────────────────────────────
+# AWS Bedrock Configuration
+# ─────────────────────────────────────────────────────────────
+aws:
+  region: ${AWS_REGION:us-east-1}   # override with AWS_REGION env var, default us-east-1
+
+  # Credentials are read from environment variables set in .vscode/launch.json
+  # (local dev) or injected by the runtime environment (EC2 / ECS / Lambda).
+  # Never hard-code keys here — this file is committed to source control.
+  credentials:
+    access-key: ${AWS_ACCESS_KEY_ID:}
+    secret-key: ${AWS_SECRET_ACCESS_KEY:}
+
+  bedrock:
+    # Model ID to use for chat.  Change to any Bedrock-supported model.
+    #
+    # Amazon Nova (current generation — no Anthropic use-case form required):
+    #   amazon.nova-micro-v1:0   — fastest, text-only
+    #   amazon.nova-lite-v1:0   — balanced speed/quality  ← default
+    #   amazon.nova-pro-v1:0    — highest quality
+    #
+    # Anthropic Claude (requires Anthropic use-case form in AWS Console):
+    #   us.anthropic.claude-3-7-sonnet-20250219-v1:0
+    #   us.anthropic.claude-3-5-haiku-20241022-v1:0
+    model-id: amazon.nova-lite-v1:0
+
+    # Maximum tokens the model may return per response
+    max-tokens: 2048
+
+    # Temperature controls creativity (0.0 = deterministic, 1.0 = creative)
+    temperature: 0.7
+
+    # How many previous messages to carry in a conversation (0 = stateless)
+    max-conversation-turns: 10
+
+# ─────────────────────────────────────────────────────────────
+# Actuator — expose /actuator/health for readiness checks
+# ─────────────────────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.example.bedrock: DEBUG
+    software.amazon.awssdk: WARN

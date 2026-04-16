@@ -1,0 +1,17 @@
+# Maven build output
+target/
+
+# VS Code — contains secrets (AWS keys in launch.json env block)
+.vscode/launch.json
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+
+# macOS
+.DS_Store
+
+# Environment files
+.env
+*.env.local
