@@ -63,6 +63,9 @@ public class BedrockProperties {
 
         /** Embedding-specific settings. */
         private Embedding embedding = new Embedding();
+
+        /** Managed Knowledge Base settings. */
+        private KnowledgeBase knowledgeBase = new KnowledgeBase();
     }
 
     @Data
@@ -85,5 +88,27 @@ public class BedrockProperties {
          * Recommended {@code true} — enables direct dot-product as cosine similarity.
          */
         private boolean normalize = true;
+    }
+
+    @Data
+    public static class KnowledgeBase {
+        /**
+         * The Knowledge Base ID from AWS Console → Bedrock → Knowledge Bases.
+         * Set via the {@code KB_ID} environment variable for local development.
+         * When blank, Knowledge Base endpoints return a descriptive error.
+         */
+        private String id = "";
+
+        /**
+         * Bedrock model used for answer generation in the {@code RetrieveAndGenerate} call.
+         * Must be enabled in your account's Bedrock model access.
+         */
+        private String modelId = "amazon.nova-lite-v1:0";
+
+        /**
+         * Default number of chunks to retrieve per query (1–100).
+         * Can be overridden per request via {@code topK}.
+         */
+        private int defaultTopK = 5;
     }
 }

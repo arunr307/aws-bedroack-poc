@@ -19,10 +19,11 @@ AI use cases via a clean REST API — without any model-specific payload formats
 9. [API — RAG (Retrieval-Augmented Generation)](#api--rag-retrieval-augmented-generation)
 10. [API — Document Analysis](#api--document-analysis)
 11. [API — Code Generation](#api--code-generation)
-12. [Project structure](#project-structure)
-13. [Running tests](#running-tests)
-14. [Supported Bedrock models](#supported-bedrock-models)
-15. [Roadmap](#roadmap)
+12. [API — Managed Knowledge Base (RAG)](#api--managed-knowledge-base-rag)
+13. [Project structure](#project-structure)
+14. [Running tests](#running-tests)
+15. [Supported Bedrock models](#supported-bedrock-models)
+16. [Roadmap](#roadmap)
 
 ---
 
@@ -32,38 +33,43 @@ AI use cases via a clean REST API — without any model-specific payload formats
 Client (curl / Postman / UI)
               │
               ▼
-┌──────────────────────────────────────────────────────────┐
-│                  Spring Boot  :8080                      │
-│                                                          │
-│  ChatController        ──▶  ChatService                  │
-│  ChatController        ──▶  StreamingChatService         │
-│  SummarizationController──▶  SummarizationService        │
-│  EmbeddingController   ──▶  EmbeddingService             │
-│  RagController         ──▶  RagService                   │
-│                              │   └──▶ EmbeddingService   │
-│                              └──▶ DocumentStore          │
-│  DocumentAnalysisController──▶  DocumentAnalysisService  │
-│                                    │                     │
-│                     BedrockRuntimeClient  (sync)         │
-│                     BedrockRuntimeAsyncClient (streaming)│
-└──────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│                   Spring Boot  :8080                       │
+│                                                            │
+│  ChatController         ──▶  ChatService                   │
+│  ChatController         ──▶  StreamingChatService          │
+│  SummarizationController──▶  SummarizationService          │
+│  EmbeddingController    ──▶  EmbeddingService              │
+│  RagController          ──▶  RagService                    │
+│                               │   └──▶ EmbeddingService    │
+│                               └──▶ DocumentStore           │
+│  DocumentAnalysisController──▶  DocumentAnalysisService    │
+│  CodeGenerationController  ──▶  CodeGenerationService      │
+│  KnowledgeBaseController   ──▶  KnowledgeBaseService       │
+│                                    │                       │
+│                     BedrockRuntimeClient  (sync)           │
+│                     BedrockRuntimeAsyncClient (streaming)  │
+│                     BedrockAgentRuntimeClient (KB)         │
+└────────────────────────────────────────────────────────────┘
                                 │
-              ┌─────────────────┼──────────────────┐
-              ▼                 ▼                  ▼
-       Converse API       ConverseStream      InvokeModel API
-    (Chat, Summarize,     (Stream Chat)      (Embeddings, RAG)
-       RAG generation)
-              │                 │                  │
-              └─────────────────┼──────────────────┘
+              ┌─────────────────┼──────────────────────────┐
+              ▼                 ▼                  ▼        ▼
+       Converse API       ConverseStream      InvokeModel  Agent Runtime
+    (Chat, Summarize,     (Stream Chat)       (Embeddings) (Knowledge Bases)
+    RAG gen, Analysis,                        RAG chunks)
+    Code Generation)
+              │                 │                  │        │
+              └─────────────────┴──────────────────┴────────┘
                                 ▼
             Foundation Model (Nova Lite / Titan Embed / Claude …)
 ```
 
 | API | Bedrock call | Used by |
 |-----|-------------|---------|
-| Converse API | `client.converse()` | Chat, Summarization, RAG generation |
+| Converse API | `client.converse()` | Chat, Summarization, RAG generation, Document Analysis, Code Generation |
 | ConverseStream API | `asyncClient.converseStream()` | Streaming Chat |
 | InvokeModel API | `client.invokeModel()` | Embeddings, RAG chunk embedding |
+| Agent Runtime API | `agentRuntimeClient.retrieveAndGenerate()` / `.retrieve()` | Managed Knowledge Bases |
 
 ---
 
@@ -1531,6 +1537,251 @@ curl http://localhost:8080/api/code/health
 
 ---
 
+## API — Managed Knowledge Base (RAG)
+
+Connects to an [Amazon Bedrock Knowledge Base](https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base.html)
+— a fully managed RAG service backed by a vector store (OpenSearch, Aurora, Pinecone, …).
+Unlike the DIY RAG pipeline (`/api/rag/*`), **chunking, embedding, and storage are handled
+entirely by AWS** — you only need to point S3 at the console and sync.
+
+### DIY RAG vs Managed Knowledge Base
+
+| | DIY RAG (`/api/rag/*`) | Managed KB (`/api/kb/*`) |
+|---|---|---|
+| Chunking | Word-based, in-memory | Automatic, configurable in console |
+| Embedding | Titan Embed via InvokeModel | Managed by AWS (Titan or Cohere) |
+| Vector store | `ConcurrentHashMap` (JVM heap) | OpenSearch / Aurora / Pinecone / … |
+| Data ingestion | `POST /api/rag/ingest` | S3 sync in AWS Console / SDK |
+| Scale | Hundreds of documents (POC) | Millions of documents (production) |
+| Multi-turn sessions | Not supported | ✅ Server-side session history |
+
+### Local setup for Managed Knowledge Base
+
+#### Step 1 — Create a Knowledge Base in AWS Console
+
+1. Open **AWS Console → Amazon Bedrock → Knowledge Bases → Create**
+2. Enter a name (e.g. `my-bedrock-kb`) and select **Amazon Titan Embed Text V2** as the embedding model
+3. Choose or create an S3 bucket as the data source
+4. Choose or let Bedrock create an **OpenSearch Serverless** vector store
+5. Click **Create Knowledge Base** and wait for it to become `Active`
+
+#### Step 2 — Upload documents and sync
+
+1. Upload PDF, TXT, DOCX, or HTML files to your S3 bucket
+2. In the Knowledge Base detail page, open **Data sources → Sync**
+3. Wait for the sync status to show `Ready`
+
+#### Step 3 — Copy the Knowledge Base ID
+
+In the Knowledge Base detail page, copy the **Knowledge Base ID** (e.g. `ABCDEF1234`).
+
+#### Step 4 — Add `KB_ID` to VS Code launch config
+
+Open [`.vscode/launch.json`](.vscode/launch.json) and add the KB ID to the env block:
+
+```json
+"env": {
+    "AWS_ACCESS_KEY_ID":     "YOUR_ACCESS_KEY",
+    "AWS_SECRET_ACCESS_KEY": "YOUR_SECRET_KEY",
+    "AWS_REGION":            "us-east-1",
+    "KB_ID":                 "ABCDEF1234"
+}
+```
+
+#### Verify setup
+
+```bash
+curl http://localhost:8080/api/kb/health
+# {"status":"UP","service":"knowledge-base","knowledgeBaseId":"ABCDEF1234",...}
+```
+
+If `KB_ID` is missing the status will be `UNCONFIGURED` and queries will return `400`.
+
+---
+
+### `POST /api/kb/query`
+
+Retrieves relevant chunks from the Knowledge Base **and** generates a grounded answer —
+all in a single Bedrock API call (`RetrieveAndGenerate`).
+
+Supports **multi-turn sessions**: pass the `sessionId` from the previous response to
+continue the conversation. Bedrock maintains session history server-side (~1 hour TTL).
+
+#### Request
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `question` | `string` | Yes | — | Question to answer (max 10 000 chars) |
+| `topK` | `integer` | No | `5` | Max chunks to retrieve |
+| `sessionId` | `string` | No | — | Resume a previous session for multi-turn |
+| `knowledgeBaseId` | `string` | No | config `KB_ID` | Override KB for this request |
+| `modelId` | `string` | No | `amazon.nova-lite-v1:0` | Override generation model |
+
+#### Response
+
+```json
+{
+  "question":        "What is AWS Lambda?",
+  "answer":          "AWS Lambda is a serverless compute service that lets you run code without provisioning servers...",
+  "sessionId":       "sess-abc123",
+  "citations": [
+    {
+      "content":      "Lambda is an event-driven, serverless compute platform...",
+      "sourceUri":    "s3://my-bucket/docs/lambda.pdf",
+      "locationType": "S3",
+      "metadata":     { "x-amz-bedrock-kb-source-uri": "s3://my-bucket/docs/lambda.pdf" }
+    }
+  ],
+  "citationCount":   1,
+  "knowledgeBaseId": "ABCDEF1234",
+  "modelId":         "amazon.nova-lite-v1:0",
+  "timestamp":       "2025-04-17T09:00:00Z"
+}
+```
+
+#### Examples
+
+**Simple question:**
+```bash
+curl -X POST http://localhost:8080/api/kb/query \
+     -H "Content-Type: application/json" \
+     -d '{ "question": "What is AWS Lambda?" }'
+```
+
+**Multi-turn conversation:**
+```bash
+# Turn 1 — start a session
+RESP=$(curl -s -X POST http://localhost:8080/api/kb/query \
+  -H "Content-Type: application/json" \
+  -d '{ "question": "What is AWS Lambda?" }')
+
+SESSION=$(echo $RESP | jq -r .sessionId)
+echo "Session: $SESSION"
+
+# Turn 2 — follow-up using the same session
+curl -X POST http://localhost:8080/api/kb/query \
+     -H "Content-Type: application/json" \
+     -d "{
+           \"question\": \"How does Lambda pricing work?\",
+           \"sessionId\": \"$SESSION\"
+         }"
+```
+
+**With retrieval tuning and model override:**
+```bash
+curl -X POST http://localhost:8080/api/kb/query \
+     -H "Content-Type: application/json" \
+     -d '{
+           "question": "Explain Lambda cold start mitigation strategies.",
+           "topK": 8,
+           "modelId": "amazon.nova-pro-v1:0"
+         }'
+```
+
+---
+
+### `POST /api/kb/retrieve`
+
+Retrieves relevant chunks from the Knowledge Base **without** generating an answer.
+Returns raw chunks with relevance scores — useful for debugging, custom re-ranking,
+or feeding into a separate prompt (`POST /api/chat`).
+
+#### Request
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `query` | `string` | Yes | — | Search query (max 10 000 chars) |
+| `topK` | `integer` | No | `5` | Max chunks to return |
+| `knowledgeBaseId` | `string` | No | config `KB_ID` | Override KB for this request |
+
+#### Response
+
+```json
+{
+  "query": "Lambda cold start mitigation",
+  "chunks": [
+    {
+      "content":      "Lambda cold starts can be reduced by keeping functions warm...",
+      "score":        0.8734,
+      "sourceUri":    "s3://my-bucket/docs/lambda-perf.pdf",
+      "locationType": "S3",
+      "metadata":     { "x-amz-bedrock-kb-source-uri": "s3://my-bucket/docs/lambda-perf.pdf" }
+    },
+    {
+      "content":      "Provisioned concurrency eliminates cold starts entirely...",
+      "score":        0.8421,
+      "sourceUri":    "s3://my-bucket/docs/lambda-perf.pdf",
+      "locationType": "S3",
+      "metadata":     {}
+    }
+  ],
+  "totalChunks":     2,
+  "knowledgeBaseId": "ABCDEF1234",
+  "timestamp":       "2025-04-17T09:00:00Z"
+}
+```
+
+#### Examples
+
+**Basic retrieval:**
+```bash
+curl -X POST http://localhost:8080/api/kb/retrieve \
+     -H "Content-Type: application/json" \
+     -d '{ "query": "Lambda cold start mitigation", "topK": 5 }'
+```
+
+**Retrieve then generate with full control:**
+```bash
+# 1. Get the relevant chunks
+CHUNKS=$(curl -s -X POST http://localhost:8080/api/kb/retrieve \
+  -H "Content-Type: application/json" \
+  -d '{ "query": "Lambda pricing model" }' \
+  | jq -r '[.chunks[].content] | join("\n\n")')
+
+# 2. Feed chunks into the Chat endpoint with a custom prompt
+curl -X POST http://localhost:8080/api/chat \
+     -H "Content-Type: application/json" \
+     -d "{
+           \"message\": \"Based on the following context, explain Lambda pricing:\\n\\n$CHUNKS\",
+           \"systemPrompt\": \"Answer only from the provided context. Be concise.\"
+         }"
+```
+
+---
+
+### `GET /api/kb/health`
+
+Returns the Knowledge Base configuration status.
+Use this to verify the `KB_ID` is set correctly before making queries.
+
+```bash
+curl http://localhost:8080/api/kb/health
+```
+
+**When configured:**
+```json
+{
+  "status":          "UP",
+  "service":         "knowledge-base",
+  "knowledgeBaseId": "ABCDEF1234",
+  "modelId":         "amazon.nova-lite-v1:0",
+  "defaultTopK":     5
+}
+```
+
+**When `KB_ID` is not set:**
+```json
+{
+  "status":          "UNCONFIGURED",
+  "service":         "knowledge-base",
+  "knowledgeBaseId": "(not set — add KB_ID to launch.json)",
+  "modelId":         "amazon.nova-lite-v1:0",
+  "defaultTopK":     5
+}
+```
+
+---
+
 ## Project structure
 
 ```
@@ -1548,7 +1799,8 @@ aws-bedrock-poc/
 │   │   │   │   ├── EmbeddingController.java        # /api/embeddings/*
 │   │   │   │   ├── RagController.java              # /api/rag/*
 │   │   │   │   ├── DocumentAnalysisController.java # /api/analysis/*
-│   │   │   │   └── CodeGenerationController.java   # /api/code/*
+│   │   │   │   ├── CodeGenerationController.java   # /api/code/*
+│   │   │   │   └── KnowledgeBaseController.java    # /api/kb/*
 │   │   │   ├── service/
 │   │   │   │   ├── ChatService.java                # Blocking Converse API
 │   │   │   │   ├── StreamingChatService.java       # ConverseStream + SseEmitter
@@ -1557,7 +1809,8 @@ aws-bedrock-poc/
 │   │   │   │   ├── RagService.java                 # RAG pipeline: chunk → embed → retrieve → generate
 │   │   │   │   ├── DocumentStore.java              # Thread-safe in-memory vector store
 │   │   │   │   ├── DocumentAnalysisService.java    # Sentiment, NER, key phrases, classification, language
-│   │   │   │   └── CodeGenerationService.java      # Generate, explain, review, convert, fix
+│   │   │   │   ├── CodeGenerationService.java      # Generate, explain, review, convert, fix
+│   │   │   │   └── KnowledgeBaseService.java       # Managed KB: RetrieveAndGenerate + Retrieve
 │   │   │   ├── model/
 │   │   │   │   ├── ChatMessage.java                # role + content pair
 │   │   │   │   ├── ChatRequest.java                # Chat POST body
@@ -1589,7 +1842,11 @@ aws-bedrock-poc/
 │   │   │   │   ├── CodeConvertRequest.java         # Code conversion request
 │   │   │   │   ├── CodeConvertResponse.java        # Converted code + notes
 │   │   │   │   ├── CodeFixRequest.java             # Code fix request
-│   │   │   │   └── CodeFixResponse.java            # Fixed code + changes list
+│   │   │   │   ├── CodeFixResponse.java            # Fixed code + changes list
+│   │   │   │   ├── KbQueryRequest.java             # Managed KB: question + session + topK
+│   │   │   │   ├── KbQueryResponse.java            # Managed KB: answer + citations (with Citation inner class)
+│   │   │   │   ├── KbRetrieveRequest.java          # Managed KB: retrieve-only request
+│   │   │   │   └── KbRetrieveResponse.java         # Managed KB: chunks + scores (with RetrievedChunk inner class)
 │   │   │   └── exception/
 │   │   │       ├── BedrockException.java           # Bedrock API errors
 │   │   │       └── GlobalExceptionHandler.java     # RFC 7807 error responses
@@ -1602,7 +1859,8 @@ aws-bedrock-poc/
 │           ├── EmbeddingServiceTest.java           # 8 tests — Embeddings (mocked)
 │           ├── RagServiceTest.java                 # 12 tests — RAG (mocked)
 │           ├── DocumentAnalysisServiceTest.java    # 12 tests — Document Analysis (mocked)
-│           └── CodeGenerationServiceTest.java      # 16 tests — Code Generation (mocked)
+│           ├── CodeGenerationServiceTest.java      # 16 tests — Code Generation (mocked)
+│           └── KnowledgeBaseServiceTest.java       # 11 tests — Managed KB (mocked)
 ├── .vscode/
 │   └── launch.json                                 # AWS credentials (gitignored)
 ├── .gitignore
@@ -1621,7 +1879,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 mvn test
 All tests mock the Bedrock client — no AWS credentials or network access required.
 
 ```
-Tests run: 62, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 73, Failures: 0, Errors: 0, Skipped: 0
 ```
 
 ---
@@ -1661,7 +1919,7 @@ Tests run: 62, Failures: 0, Errors: 0, Skipped: 0
 | 5 | RAG — DIY in-memory pipeline | ✅ Done |
 | 6 | Document Analysis (sentiment, NER, key phrases, classification, language) | ✅ Done |
 | 7 | Code Generation (generate, explain, review, convert, fix) | ✅ Done |
-| 8 | RAG with Bedrock Knowledge Bases (managed) | Planned |
+| 8 | RAG with Bedrock Knowledge Bases (managed) | ✅ Done |
 | 9 | Agents with tool / function calling | Planned |
 | 10 | Image Generation | Planned |
 | 11 | Prompt Flows | Planned |

@@ -10,6 +10,7 @@ import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.bedrockagentruntime.BedrockAgentRuntimeClient;
 import software.amazon.awssdk.services.bedrockruntime.BedrockRuntimeAsyncClient;
 import software.amazon.awssdk.services.bedrockruntime.BedrockRuntimeClient;
 
@@ -70,6 +71,27 @@ public class BedrockConfig {
         log.info("Initialising BedrockRuntimeAsyncClient — region={}", region);
 
         return BedrockRuntimeAsyncClient.builder()
+                .region(region)
+                .credentialsProvider(credentialsProvider)
+                .build();
+    }
+
+    /**
+     * Creates and returns a {@link BedrockAgentRuntimeClient} used exclusively by
+     * {@link com.example.bedrock.service.KnowledgeBaseService}.
+     *
+     * <p>The Agent Runtime client exposes the {@code Retrieve} and
+     * {@code RetrieveAndGenerate} APIs — these are separate from the Converse API
+     * and live in a different AWS service endpoint ({@code bedrock-agent-runtime}).
+     */
+    @Bean
+    public BedrockAgentRuntimeClient bedrockAgentRuntimeClient() {
+        AwsCredentialsProvider credentialsProvider = resolveCredentialsProvider();
+        Region region = Region.of(properties.getRegion());
+
+        log.info("Initialising BedrockAgentRuntimeClient — region={}", region);
+
+        return BedrockAgentRuntimeClient.builder()
                 .region(region)
                 .credentialsProvider(credentialsProvider)
                 .build();

@@ -60,6 +60,12 @@
             <artifactId>bedrockruntime</artifactId>
         </dependency>
 
+        <!-- AWS SDK: Bedrock Agent Runtime — Knowledge Base Retrieve & RetrieveAndGenerate APIs -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>bedrockagentruntime</artifactId>
+        </dependency>
+
         <!-- AWS SDK: STS — resolves temporary credentials from profiles/roles -->
         <dependency>
             <groupId>software.amazon.awssdk</groupId>

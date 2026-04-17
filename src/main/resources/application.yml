@@ -48,6 +48,20 @@ aws:
       dimensions: 1024
       normalize: true   # L2-normalise vectors — enables dot-product as cosine similarity
 
+    # ── Managed Knowledge Base (Bedrock Knowledge Bases) ─────────
+    knowledge-base:
+      # The Knowledge Base ID shown in AWS Console → Bedrock → Knowledge Bases.
+      # Set via KB_ID env var in .vscode/launch.json for local dev.
+      id: ${KB_ID:}
+
+      # Generation model used for the RetrieveAndGenerate call.
+      # Must be enabled in your account's Bedrock model access.
+      model-id: amazon.nova-lite-v1:0
+
+      # Max chunks returned per retrieve call (1-100).
+      # Higher values give the model more context but cost more tokens.
+      default-top-k: 5
+
 # ─────────────────────────────────────────────────────────────
 # Actuator — expose /actuator/health for readiness checks
 # ─────────────────────────────────────────────────────────────
