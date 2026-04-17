@@ -191,7 +191,7 @@ public class EmbeddingService {
      * @param text text to embed
      * @return normalised embedding vector
      */
-    List<Double> embedText(String text) {
+    public List<Double> embedText(String text) {
         BedrockProperties.Embedding cfg = properties.getBedrock().getEmbedding();
         return invokeEmbedding(text, cfg.getModelId(), cfg.getDimensions(), cfg.isNormalize())
                 .embedding();
@@ -200,7 +200,7 @@ public class EmbeddingService {
     /**
      * Cosine similarity between two vectors — exposed for use by {@link RagService}.
      */
-    double similarity(List<Double> a, List<Double> b) {
+    public double similarity(List<Double> a, List<Double> b) {
         return cosineSimilarity(a, b, properties.getBedrock().getEmbedding().isNormalize());
     }
 

@@ -17,10 +17,11 @@ AI use cases via a clean REST API — without any model-specific payload formats
 7. [API — Text Summarization](#api--text-summarization)
 8. [API — Embeddings](#api--embeddings)
 9. [API — RAG (Retrieval-Augmented Generation)](#api--rag-retrieval-augmented-generation)
-10. [Project structure](#project-structure)
-11. [Running tests](#running-tests)
-12. [Supported Bedrock models](#supported-bedrock-models)
-13. [Roadmap](#roadmap)
+10. [API — Document Analysis](#api--document-analysis)
+11. [Project structure](#project-structure)
+12. [Running tests](#running-tests)
+13. [Supported Bedrock models](#supported-bedrock-models)
+14. [Roadmap](#roadmap)
 
 ---
 
@@ -40,6 +41,7 @@ Client (curl / Postman / UI)
 │  RagController         ──▶  RagService                   │
 │                              │   └──▶ EmbeddingService   │
 │                              └──▶ DocumentStore          │
+│  DocumentAnalysisController──▶  DocumentAnalysisService  │
 │                                    │                     │
 │                     BedrockRuntimeClient  (sync)         │
 │                     BedrockRuntimeAsyncClient (streaming)│
@@ -965,6 +967,182 @@ curl -X DELETE http://localhost:8080/api/rag/documents
 
 ---
 
+## API — Document Analysis
+
+Extracts structured insights from any text in a single Bedrock call —
+sentiment, named entities, key phrases, topic classification, and language detection.
+
+> **Model:** Uses the Converse API. Default: `amazon.nova-lite-v1:0`.
+> For large documents or high-entity texts, consider `amazon.nova-pro-v1:0`.
+
+### Analysis types
+
+| Type | What it returns |
+|------|-----------------|
+| `SENTIMENT` | Dominant label (POSITIVE / NEGATIVE / NEUTRAL / MIXED) + per-class confidence scores |
+| `ENTITIES` | Named entities with type (PERSON, ORGANIZATION, LOCATION, DATE, MONEY, PRODUCT, EVENT, …) and confidence |
+| `KEY_PHRASES` | Up to 15 most important phrases, ranked by relevance score |
+| `CLASSIFICATION` | Text category — built-in taxonomy or your own labels |
+| `LANGUAGE_DETECTION` | BCP-47 language code, full language name, confidence |
+
+**Built-in classification labels:** TECHNOLOGY, BUSINESS, HEALTH, SCIENCE, POLITICS, SPORTS, ENTERTAINMENT, FINANCE, LEGAL, OTHER
+
+---
+
+### `POST /api/analysis/analyze`
+
+Runs one or more analyses on the provided text.
+All five analyses run by default when `analysisTypes` is omitted.
+
+#### Request
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `text` | `string` | Yes | — | Text to analyse (max 100 000 chars) |
+| `analysisTypes` | `AnalysisType[]` | No | all 5 | Subset of analyses to run |
+| `customLabels` | `string[]` | No | built-in taxonomy | Custom category labels for `CLASSIFICATION` (max 30) |
+| `modelId` | `string` | No | config | Override the Bedrock model |
+
+#### Response
+
+```json
+{
+  "analysisTypes": ["SENTIMENT", "ENTITIES", "KEY_PHRASES", "CLASSIFICATION", "LANGUAGE_DETECTION"],
+  "sentiment": {
+    "label": "POSITIVE",
+    "confidence": 0.91,
+    "positiveScore": 0.82,
+    "negativeScore": 0.03,
+    "neutralScore":  0.12,
+    "mixedScore":    0.03
+  },
+  "entities": [
+    { "text": "Apple Inc.", "type": "ORGANIZATION", "confidence": 0.99 },
+    { "text": "Tim Cook",   "type": "PERSON",       "confidence": 0.98 },
+    { "text": "$89.5B",     "type": "MONEY",        "confidence": 0.97 }
+  ],
+  "keyPhrases": [
+    { "phrase": "record revenue",        "score": 0.95 },
+    { "phrase": "strong iPhone 15 sales","score": 0.91 },
+    { "phrase": "share buyback",         "score": 0.88 }
+  ],
+  "classifications": [
+    { "label": "FINANCE",    "score": 0.88 },
+    { "label": "TECHNOLOGY", "score": 0.72 }
+  ],
+  "language": {
+    "languageCode": "en",
+    "languageName": "English",
+    "confidence":   0.99
+  },
+  "modelId": "amazon.nova-lite-v1:0",
+  "usage": { "inputTokens": 540, "outputTokens": 210, "totalTokens": 750 },
+  "timestamp": "2025-04-17T09:00:00Z"
+}
+```
+
+Sections not requested are `null` in the response.
+
+#### Examples
+
+**Run all analyses (default):**
+```bash
+curl -X POST http://localhost:8080/api/analysis/analyze \
+     -H "Content-Type: application/json" \
+     -d '{
+           "text": "Apple Inc. reported record revenue of $89.5B in Q1 2024, beating analyst expectations. CEO Tim Cook cited strong iPhone 15 sales and growth in services revenue. The company also announced a $110B share buyback programme."
+         }'
+```
+
+**Sentiment only:**
+```bash
+curl -X POST http://localhost:8080/api/analysis/analyze \
+     -H "Content-Type: application/json" \
+     -d '{
+           "text": "The product crashed immediately after launch. Customers are furious and support queues are overwhelmed.",
+           "analysisTypes": ["SENTIMENT"]
+         }'
+```
+
+**Entities + key phrases only:**
+```bash
+curl -X POST http://localhost:8080/api/analysis/analyze \
+     -H "Content-Type: application/json" \
+     -d '{
+           "text": "Elon Musk announced that Tesla will open a new Gigafactory in Mexico in 2026, investing $5B.",
+           "analysisTypes": ["ENTITIES", "KEY_PHRASES"]
+         }'
+```
+
+**Custom classification labels (e.g. support ticket triage):**
+```bash
+curl -X POST http://localhost:8080/api/analysis/analyze \
+     -H "Content-Type: application/json" \
+     -d '{
+           "text": "I cannot log into my account. The password reset email never arrives.",
+           "analysisTypes": ["CLASSIFICATION"],
+           "customLabels": ["Bug Report", "Feature Request", "Account Issue", "Billing", "General Inquiry"]
+         }'
+```
+
+**Language detection:**
+```bash
+curl -X POST http://localhost:8080/api/analysis/analyze \
+     -H "Content-Type: application/json" \
+     -d '{
+           "text": "Bonjour le monde. Ceci est un exemple de texte en français.",
+           "analysisTypes": ["LANGUAGE_DETECTION"]
+         }'
+```
+
+**Analyse a file:**
+```bash
+curl -X POST http://localhost:8080/api/analysis/analyze \
+     -H "Content-Type: application/json" \
+     -d "{\"text\": $(jq -Rs . < article.txt)}"
+```
+
+**Use a more powerful model for long, entity-dense documents:**
+```bash
+curl -X POST http://localhost:8080/api/analysis/analyze \
+     -H "Content-Type: application/json" \
+     -d '{
+           "text": "YOUR_LONG_DOCUMENT_HERE",
+           "modelId": "amazon.nova-pro-v1:0"
+         }'
+```
+
+---
+
+### `GET /api/analysis/types`
+
+Returns all available analysis types with descriptions — useful for building a UI picker.
+
+```bash
+curl http://localhost:8080/api/analysis/types
+```
+
+```json
+[
+  { "type": "SENTIMENT",         "description": "Sentiment analysis — classifies overall tone and provides per-sentiment confidence scores" },
+  { "type": "ENTITIES",          "description": "Named entity recognition — extracts people, organizations, locations, dates, money, products, and events" },
+  { "type": "KEY_PHRASES",       "description": "Key phrase extraction — surfaces the most meaningful phrases and topics" },
+  { "type": "CLASSIFICATION",    "description": "Text classification — assigns the text to predefined or custom categories" },
+  { "type": "LANGUAGE_DETECTION","description": "Language detection — identifies the language and reports a confidence score" }
+]
+```
+
+---
+
+### `GET /api/analysis/health`
+
+```bash
+curl http://localhost:8080/api/analysis/health
+# {"status":"UP","service":"document-analysis"}
+```
+
+---
+
 ## Project structure
 
 ```
@@ -980,14 +1158,16 @@ aws-bedrock-poc/
 │   │   │   │   ├── ChatController.java             # /api/chat  &  /api/chat/stream
 │   │   │   │   ├── SummarizationController.java    # /api/summarize
 │   │   │   │   ├── EmbeddingController.java        # /api/embeddings/*
-│   │   │   │   └── RagController.java              # /api/rag/*
+│   │   │   │   ├── RagController.java              # /api/rag/*
+│   │   │   │   └── DocumentAnalysisController.java # /api/analysis/*
 │   │   │   ├── service/
 │   │   │   │   ├── ChatService.java                # Blocking Converse API
 │   │   │   │   ├── StreamingChatService.java       # ConverseStream + SseEmitter
 │   │   │   │   ├── SummarizationService.java       # Style-guided summarization
 │   │   │   │   ├── EmbeddingService.java           # InvokeModel + cosine similarity
 │   │   │   │   ├── RagService.java                 # RAG pipeline: chunk → embed → retrieve → generate
-│   │   │   │   └── DocumentStore.java              # Thread-safe in-memory vector store
+│   │   │   │   ├── DocumentStore.java              # Thread-safe in-memory vector store
+│   │   │   │   └── DocumentAnalysisService.java    # Sentiment, NER, key phrases, classification, language
 │   │   │   ├── model/
 │   │   │   │   ├── ChatMessage.java                # role + content pair
 │   │   │   │   ├── ChatRequest.java                # Chat POST body
@@ -1004,7 +1184,10 @@ aws-bedrock-poc/
 │   │   │   │   ├── IngestRequest.java              # RAG: batch document ingest
 │   │   │   │   ├── IngestResponse.java             # RAG: ingest result with doc IDs
 │   │   │   │   ├── RagQueryRequest.java            # RAG: question + retrieval params
-│   │   │   │   └── RagQueryResponse.java           # RAG: answer + sources + token usage
+│   │   │   │   ├── RagQueryResponse.java           # RAG: answer + sources + token usage
+│   │   │   │   ├── AnalysisType.java               # Enum: SENTIMENT, ENTITIES, KEY_PHRASES, CLASSIFICATION, LANGUAGE_DETECTION
+│   │   │   │   ├── AnalysisRequest.java            # Document analysis request
+│   │   │   │   └── AnalysisResponse.java           # Analysis results + inner result types
 │   │   │   └── exception/
 │   │   │       ├── BedrockException.java           # Bedrock API errors
 │   │   │       └── GlobalExceptionHandler.java     # RFC 7807 error responses
@@ -1015,7 +1198,8 @@ aws-bedrock-poc/
 │           ├── ChatServiceTest.java                # 4 tests — Chat (mocked)
 │           ├── SummarizationServiceTest.java       # 10 tests — Summarization (mocked)
 │           ├── EmbeddingServiceTest.java           # 8 tests — Embeddings (mocked)
-│           └── RagServiceTest.java                 # 11 tests — RAG (mocked)
+│           ├── RagServiceTest.java                 # 12 tests — RAG (mocked)
+│           └── DocumentAnalysisServiceTest.java    # 12 tests — Document Analysis (mocked)
 ├── .vscode/
 │   └── launch.json                                 # AWS credentials (gitignored)
 ├── .gitignore
@@ -1034,7 +1218,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 mvn test
 All tests mock the Bedrock client — no AWS credentials or network access required.
 
 ```
-Tests run: 33, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 46, Failures: 0, Errors: 0, Skipped: 0
 ```
 
 ---
@@ -1072,7 +1256,7 @@ Tests run: 33, Failures: 0, Errors: 0, Skipped: 0
 | 3 | Text Summarization (5 styles) | ✅ Done |
 | 4 | Embeddings + Semantic Search | ✅ Done |
 | 5 | RAG — DIY in-memory pipeline | ✅ Done |
-| 6 | Document Analysis (entities, sentiment, classification) | Planned |
+| 6 | Document Analysis (sentiment, NER, key phrases, classification, language) | ✅ Done |
 | 7 | Code Generation | Planned |
 | 8 | RAG with Bedrock Knowledge Bases (managed) | Planned |
 | 9 | Agents with tool / function calling | Planned |

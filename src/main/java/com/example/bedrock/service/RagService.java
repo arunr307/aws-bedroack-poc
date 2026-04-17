@@ -222,7 +222,7 @@ public class RagService {
      * @param chunkOverlap words shared between consecutive chunks
      * @return ordered list of chunk strings
      */
-    List<String> chunkText(String text, int chunkSize, int chunkOverlap) {
+    public List<String> chunkText(String text, int chunkSize, int chunkOverlap) {
         if (text == null || text.isBlank()) return List.of();
 
         String[] words = text.trim().split("\\s+");
