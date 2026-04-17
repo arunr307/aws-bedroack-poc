@@ -18,10 +18,11 @@ AI use cases via a clean REST API — without any model-specific payload formats
 8. [API — Embeddings](#api--embeddings)
 9. [API — RAG (Retrieval-Augmented Generation)](#api--rag-retrieval-augmented-generation)
 10. [API — Document Analysis](#api--document-analysis)
-11. [Project structure](#project-structure)
-12. [Running tests](#running-tests)
-13. [Supported Bedrock models](#supported-bedrock-models)
-14. [Roadmap](#roadmap)
+11. [API — Code Generation](#api--code-generation)
+12. [Project structure](#project-structure)
+13. [Running tests](#running-tests)
+14. [Supported Bedrock models](#supported-bedrock-models)
+15. [Roadmap](#roadmap)
 
 ---
 
@@ -1143,6 +1144,393 @@ curl http://localhost:8080/api/analysis/health
 
 ---
 
+## API — Code Generation
+
+Five code-intelligence operations in one service, all powered by the Bedrock Converse API.
+The model is prompted to return structured JSON for every operation — no regex scraping of prose.
+
+> **Model:** Default `amazon.nova-lite-v1:0`. Use `amazon.nova-pro-v1:0` for complex
+> code, long files, or when higher accuracy is needed.
+
+### Operations at a glance
+
+| Endpoint | What it does |
+|----------|-------------|
+| `POST /api/code/generate` | Generate code from a natural language description |
+| `POST /api/code/explain`  | Explain what code does (brief or detailed) |
+| `POST /api/code/review`   | Review for bugs, security flaws, performance issues, and style |
+| `POST /api/code/convert`  | Translate code between programming languages |
+| `POST /api/code/fix`      | Debug and correct broken code |
+| `GET  /api/code/languages` | List supported languages (informational) |
+| `GET  /api/code/review/focuses` | List review focus areas with descriptions |
+| `GET  /api/code/health`   | Health check |
+
+---
+
+### `POST /api/code/generate`
+
+Generate complete, runnable code from a plain-English description.
+
+#### Request
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `description` | `string` | Yes | What the code should do (max 10 000 chars) |
+| `language` | `string` | Yes | Target language (e.g. `"Java"`, `"Python"`, `"Go"`) |
+| `framework` | `string` | No | Framework context (e.g. `"Spring Boot"`, `"FastAPI"`) |
+| `requirements` | `string[]` | No | Extra constraints — max 20 items |
+| `modelId` | `string` | No | Override model |
+
+#### Response
+
+```json
+{
+  "code": "def binary_search(arr, target):\n    lo, hi = 0, len(arr) - 1\n    while lo <= hi:\n        ...",
+  "language": "Python",
+  "explanation": "Iterative binary search that returns the index of target or -1 if not found.",
+  "dependencies": [],
+  "modelId": "amazon.nova-lite-v1:0",
+  "usage": { "inputTokens": 120, "outputTokens": 210, "totalTokens": 330 },
+  "timestamp": "2025-04-17T09:00:00Z"
+}
+```
+
+#### Examples
+
+**Minimal:**
+```bash
+curl -X POST http://localhost:8080/api/code/generate \
+     -H "Content-Type: application/json" \
+     -d '{
+           "description": "Binary search over a sorted integer array, returning the index or -1",
+           "language": "Python"
+         }'
+```
+
+**With framework and requirements:**
+```bash
+curl -X POST http://localhost:8080/api/code/generate \
+     -H "Content-Type: application/json" \
+     -d '{
+           "description": "REST endpoint to create a new user with email and password",
+           "language": "Java",
+           "framework": "Spring Boot",
+           "requirements": [
+             "Validate request body with Bean Validation",
+             "Return HTTP 201 with the created user ID",
+             "Hash the password with BCrypt",
+             "Add Javadoc"
+           ]
+         }'
+```
+
+**Go concurrency pattern:**
+```bash
+curl -X POST http://localhost:8080/api/code/generate \
+     -H "Content-Type: application/json" \
+     -d '{
+           "description": "Fan-out/fan-in pipeline that fetches URLs concurrently and collects results",
+           "language": "Go",
+           "requirements": ["Use goroutines and channels", "Handle errors gracefully", "Respect context cancellation"]
+         }'
+```
+
+---
+
+### `POST /api/code/explain`
+
+Explain what a piece of code does — brief overview or detailed walkthrough.
+
+#### Request
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `code` | `string` | Yes | — | Code to explain (max 100 000 chars) |
+| `language` | `string` | No | auto-detect | Programming language hint |
+| `detailLevel` | `BRIEF\|DETAILED` | No | `DETAILED` | How deep the explanation should be |
+| `modelId` | `string` | No | config | Override model |
+
+#### Response
+
+```json
+{
+  "language": "Java",
+  "explanation": "This method computes Fibonacci numbers using naive recursion...",
+  "keyPoints": [
+    "Exponential time complexity O(2^n) — recomputes the same sub-problems repeatedly",
+    "No memoization — consider dynamic programming for large n",
+    "Base cases: n=0 returns 0, n=1 returns 1"
+  ],
+  "complexity": "MODERATE",
+  "modelId": "amazon.nova-lite-v1:0",
+  "usage": { "inputTokens": 85, "outputTokens": 175, "totalTokens": 260 },
+  "timestamp": "2025-04-17T09:00:00Z"
+}
+```
+
+#### Examples
+
+**Explain a recursive function:**
+```bash
+curl -X POST http://localhost:8080/api/code/explain \
+     -H "Content-Type: application/json" \
+     -d '{
+           "code": "int fib(int n) { return n <= 1 ? n : fib(n-1) + fib(n-2); }",
+           "language": "Java"
+         }'
+```
+
+**Brief explanation of a SQL query:**
+```bash
+curl -X POST http://localhost:8080/api/code/explain \
+     -H "Content-Type: application/json" \
+     -d '{
+           "code": "SELECT u.name, COUNT(o.id) FROM users u LEFT JOIN orders o ON u.id = o.user_id GROUP BY u.id HAVING COUNT(o.id) > 5",
+           "language": "SQL",
+           "detailLevel": "BRIEF"
+         }'
+```
+
+---
+
+### `POST /api/code/review`
+
+Review code for bugs, security vulnerabilities, performance issues, and style problems.
+Returns issues ordered by severity (CRITICAL first) and an overall quality rating.
+
+#### Request
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `code` | `string` | Yes | — | Code to review (max 100 000 chars) |
+| `language` | `string` | No | auto-detect | Language hint |
+| `focusAreas` | `ReviewFocus[]` | No | all 5 areas | Limit review scope |
+| `modelId` | `string` | No | config | Override model |
+
+**Review focus areas:** `BUGS`, `SECURITY`, `PERFORMANCE`, `STYLE`, `MAINTAINABILITY`
+
+#### Response
+
+```json
+{
+  "issues": [
+    {
+      "severity": "CRITICAL",
+      "category": "SECURITY",
+      "description": "SQL injection — user input concatenated directly into the query string.",
+      "lineReference": "line 3",
+      "suggestion": "Use PreparedStatement with parameterized queries."
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "STYLE",
+      "description": "Method name does not follow Java naming conventions.",
+      "lineReference": "line 1",
+      "suggestion": "Rename to getUserById following camelCase convention."
+    }
+  ],
+  "summary": "Critical SQL injection vulnerability must be fixed before deployment.",
+  "overallRating": 3,
+  "modelId": "amazon.nova-lite-v1:0",
+  "usage": { "inputTokens": 140, "outputTokens": 220, "totalTokens": 360 },
+  "timestamp": "2025-04-17T09:00:00Z"
+}
+```
+
+**Severity levels:** `CRITICAL` → `HIGH` → `MEDIUM` → `LOW` → `INFO`
+
+#### Examples
+
+**Full review:**
+```bash
+curl -X POST http://localhost:8080/api/code/review \
+     -H "Content-Type: application/json" \
+     -d '{
+           "code": "public String getUser(String id) { return db.query(\"SELECT * FROM users WHERE id = \" + id); }",
+           "language": "Java"
+         }'
+```
+
+**Security-only review:**
+```bash
+curl -X POST http://localhost:8080/api/code/review \
+     -H "Content-Type: application/json" \
+     -d '{
+           "code": "YOUR_CODE_HERE",
+           "focusAreas": ["SECURITY"]
+         }'
+```
+
+**Performance + bugs only:**
+```bash
+curl -X POST http://localhost:8080/api/code/review \
+     -H "Content-Type: application/json" \
+     -d '{
+           "code": "YOUR_CODE_HERE",
+           "language": "Python",
+           "focusAreas": ["PERFORMANCE", "BUGS"]
+         }'
+```
+
+---
+
+### `POST /api/code/convert`
+
+Translate code from one language to another, producing idiomatic output.
+
+#### Request
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `code` | `string` | Yes | Code to convert (max 100 000 chars) |
+| `targetLanguage` | `string` | Yes | Target language (e.g. `"Go"`, `"Rust"`) |
+| `sourceLanguage` | `string` | No | Auto-detected when omitted |
+| `modelId` | `string` | No | Override model |
+
+#### Response
+
+```json
+{
+  "convertedCode": "func add(a, b int) int {\n    return a + b\n}",
+  "sourceLanguage": "Python",
+  "targetLanguage": "Go",
+  "notes": [
+    "Added explicit static types — Go is statically typed",
+    "Removed def keyword — Go uses func",
+    "No return type inference — must declare int return type"
+  ],
+  "modelId": "amazon.nova-lite-v1:0",
+  "usage": { "inputTokens": 90, "outputTokens": 130, "totalTokens": 220 },
+  "timestamp": "2025-04-17T09:00:00Z"
+}
+```
+
+#### Examples
+
+**Python → TypeScript:**
+```bash
+curl -X POST http://localhost:8080/api/code/convert \
+     -H "Content-Type: application/json" \
+     -d '{
+           "code": "def greet(name: str) -> str:\n    return f\"Hello, {name}!\"",
+           "sourceLanguage": "Python",
+           "targetLanguage": "TypeScript"
+         }'
+```
+
+**Java → Rust (auto-detect source):**
+```bash
+curl -X POST http://localhost:8080/api/code/convert \
+     -H "Content-Type: application/json" \
+     -d '{
+           "code": "public int[] twoSum(int[] nums, int target) { ... }",
+           "targetLanguage": "Rust"
+         }'
+```
+
+---
+
+### `POST /api/code/fix`
+
+Debug and correct broken code. Provide the error message for best results.
+
+#### Request
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `code` | `string` | Yes | Buggy code to fix (max 100 000 chars) |
+| `language` | `string` | No | Language hint |
+| `errorMessage` | `string` | No | Error / exception / wrong behaviour description (max 5 000 chars) |
+| `modelId` | `string` | No | Override model |
+
+#### Response
+
+```json
+{
+  "fixedCode": "public int divide(int a, int b) {\n    if (b == 0) throw new ArithmeticException(\"Division by zero\");\n    return a / b;\n}",
+  "language": "Java",
+  "explanation": "Added a guard clause to prevent division by zero before executing the operation.",
+  "changes": [
+    "Added null/zero guard for parameter b (line 2)",
+    "Guard throws a descriptive ArithmeticException instead of crashing"
+  ],
+  "modelId": "amazon.nova-lite-v1:0",
+  "usage": { "inputTokens": 95, "outputTokens": 145, "totalTokens": 240 },
+  "timestamp": "2025-04-17T09:00:00Z"
+}
+```
+
+#### Examples
+
+**Fix with error message:**
+```bash
+curl -X POST http://localhost:8080/api/code/fix \
+     -H "Content-Type: application/json" \
+     -d '{
+           "code": "public int divide(int a, int b) { return a / b; }",
+           "language": "Java",
+           "errorMessage": "ArithmeticException: / by zero"
+         }'
+```
+
+**General fix (no specific error):**
+```bash
+curl -X POST http://localhost:8080/api/code/fix \
+     -H "Content-Type: application/json" \
+     -d '{
+           "code": "def fib(n): return fib(n-1) + fib(n-2)",
+           "language": "Python"
+         }'
+```
+
+**Fix with stack trace:**
+```bash
+curl -X POST http://localhost:8080/api/code/fix \
+     -H "Content-Type: application/json" \
+     -d '{
+           "code": "YOUR_CODE_HERE",
+           "errorMessage": "NullPointerException at MyClass.java:42\n  caused by: field user was null"
+         }'
+```
+
+---
+
+### `GET /api/code/languages`
+
+Returns a list of supported programming languages (informational — any language string is accepted).
+
+```bash
+curl http://localhost:8080/api/code/languages
+# ["Bash","C","C++","C#","CSS","Dart","Go","GraphQL",...]
+```
+
+### `GET /api/code/review/focuses`
+
+Returns review focus areas with descriptions.
+
+```bash
+curl http://localhost:8080/api/code/review/focuses
+```
+
+```json
+[
+  { "focus": "BUGS",            "description": "Logic errors, null-safety issues, off-by-one errors, exception handling" },
+  { "focus": "SECURITY",        "description": "SQL/command injection, insecure defaults, sensitive data exposure, auth weaknesses" },
+  { "focus": "PERFORMANCE",     "description": "Time/space complexity, unnecessary allocations, blocking I/O, caching" },
+  { "focus": "STYLE",           "description": "Naming conventions, formatting, dead code, magic numbers, code duplication" },
+  { "focus": "MAINTAINABILITY", "description": "Readability, testability, SOLID principles, coupling, abstraction quality" }
+]
+```
+
+### `GET /api/code/health`
+
+```bash
+curl http://localhost:8080/api/code/health
+# {"status":"UP","service":"code-generation"}
+```
+
+---
+
 ## Project structure
 
 ```
@@ -1159,7 +1547,8 @@ aws-bedrock-poc/
 │   │   │   │   ├── SummarizationController.java    # /api/summarize
 │   │   │   │   ├── EmbeddingController.java        # /api/embeddings/*
 │   │   │   │   ├── RagController.java              # /api/rag/*
-│   │   │   │   └── DocumentAnalysisController.java # /api/analysis/*
+│   │   │   │   ├── DocumentAnalysisController.java # /api/analysis/*
+│   │   │   │   └── CodeGenerationController.java   # /api/code/*
 │   │   │   ├── service/
 │   │   │   │   ├── ChatService.java                # Blocking Converse API
 │   │   │   │   ├── StreamingChatService.java       # ConverseStream + SseEmitter
@@ -1167,7 +1556,8 @@ aws-bedrock-poc/
 │   │   │   │   ├── EmbeddingService.java           # InvokeModel + cosine similarity
 │   │   │   │   ├── RagService.java                 # RAG pipeline: chunk → embed → retrieve → generate
 │   │   │   │   ├── DocumentStore.java              # Thread-safe in-memory vector store
-│   │   │   │   └── DocumentAnalysisService.java    # Sentiment, NER, key phrases, classification, language
+│   │   │   │   ├── DocumentAnalysisService.java    # Sentiment, NER, key phrases, classification, language
+│   │   │   │   └── CodeGenerationService.java      # Generate, explain, review, convert, fix
 │   │   │   ├── model/
 │   │   │   │   ├── ChatMessage.java                # role + content pair
 │   │   │   │   ├── ChatRequest.java                # Chat POST body
@@ -1187,7 +1577,19 @@ aws-bedrock-poc/
 │   │   │   │   ├── RagQueryResponse.java           # RAG: answer + sources + token usage
 │   │   │   │   ├── AnalysisType.java               # Enum: SENTIMENT, ENTITIES, KEY_PHRASES, CLASSIFICATION, LANGUAGE_DETECTION
 │   │   │   │   ├── AnalysisRequest.java            # Document analysis request
-│   │   │   │   └── AnalysisResponse.java           # Analysis results + inner result types
+│   │   │   │   ├── AnalysisResponse.java           # Analysis results + inner result types
+│   │   │   │   ├── DetailLevel.java                # Enum: BRIEF | DETAILED (code explain)
+│   │   │   │   ├── ReviewFocus.java                # Enum: BUGS, SECURITY, PERFORMANCE, STYLE, MAINTAINABILITY
+│   │   │   │   ├── CodeGenerateRequest.java        # Code generation request
+│   │   │   │   ├── CodeGenerateResponse.java       # Generated code + dependencies
+│   │   │   │   ├── CodeExplainRequest.java         # Code explanation request
+│   │   │   │   ├── CodeExplainResponse.java        # Explanation + key points + complexity
+│   │   │   │   ├── CodeReviewRequest.java          # Code review request
+│   │   │   │   ├── CodeReviewResponse.java         # Issues list + rating (with ReviewIssue inner class)
+│   │   │   │   ├── CodeConvertRequest.java         # Code conversion request
+│   │   │   │   ├── CodeConvertResponse.java        # Converted code + notes
+│   │   │   │   ├── CodeFixRequest.java             # Code fix request
+│   │   │   │   └── CodeFixResponse.java            # Fixed code + changes list
 │   │   │   └── exception/
 │   │   │       ├── BedrockException.java           # Bedrock API errors
 │   │   │       └── GlobalExceptionHandler.java     # RFC 7807 error responses
@@ -1199,7 +1601,8 @@ aws-bedrock-poc/
 │           ├── SummarizationServiceTest.java       # 10 tests — Summarization (mocked)
 │           ├── EmbeddingServiceTest.java           # 8 tests — Embeddings (mocked)
 │           ├── RagServiceTest.java                 # 12 tests — RAG (mocked)
-│           └── DocumentAnalysisServiceTest.java    # 12 tests — Document Analysis (mocked)
+│           ├── DocumentAnalysisServiceTest.java    # 12 tests — Document Analysis (mocked)
+│           └── CodeGenerationServiceTest.java      # 16 tests — Code Generation (mocked)
 ├── .vscode/
 │   └── launch.json                                 # AWS credentials (gitignored)
 ├── .gitignore
@@ -1218,7 +1621,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 mvn test
 All tests mock the Bedrock client — no AWS credentials or network access required.
 
 ```
-Tests run: 46, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 62, Failures: 0, Errors: 0, Skipped: 0
 ```
 
 ---
@@ -1257,7 +1660,7 @@ Tests run: 46, Failures: 0, Errors: 0, Skipped: 0
 | 4 | Embeddings + Semantic Search | ✅ Done |
 | 5 | RAG — DIY in-memory pipeline | ✅ Done |
 | 6 | Document Analysis (sentiment, NER, key phrases, classification, language) | ✅ Done |
-| 7 | Code Generation | Planned |
+| 7 | Code Generation (generate, explain, review, convert, fix) | ✅ Done |
 | 8 | RAG with Bedrock Knowledge Bases (managed) | Planned |
 | 9 | Agents with tool / function calling | Planned |
 | 10 | Image Generation | Planned |
