@@ -21,10 +21,11 @@ AI use cases via a clean REST API — without any model-specific payload formats
 11. [API — Code Generation](#api--code-generation)
 12. [API — Managed Knowledge Base (RAG)](#api--managed-knowledge-base-rag)
 13. [API — Agent Chat (Tool / Function Calling)](#api--agent-chat-tool--function-calling)
-14. [Project structure](#project-structure)
-15. [Running tests](#running-tests)
-16. [Supported Bedrock models](#supported-bedrock-models)
-17. [Roadmap](#roadmap)
+14. [API — Image Generation](#api--image-generation)
+15. [Project structure](#project-structure)
+16. [Running tests](#running-tests)
+17. [Supported Bedrock models](#supported-bedrock-models)
+18. [Roadmap](#roadmap)
 
 ---
 
@@ -49,6 +50,7 @@ Client (curl / Postman / UI)
 │  KnowledgeBaseController   ──▶  KnowledgeBaseService       │
 │  AgentController           ──▶  AgentService               │
 │                                    │  (agentic tool loop)  │
+│  ImageGenerationController ──▶  ImageGenerationService     │
 │                     BedrockRuntimeClient  (sync)           │
 │                     BedrockRuntimeAsyncClient (streaming)  │
 │                     BedrockAgentRuntimeClient (KB)         │
@@ -70,7 +72,7 @@ Client (curl / Postman / UI)
 |-----|-------------|---------|
 | Converse API | `client.converse()` | Chat, Summarization, RAG generation, Document Analysis, Code Generation, Agent (tool loop) |
 | ConverseStream API | `asyncClient.converseStream()` | Streaming Chat |
-| InvokeModel API | `client.invokeModel()` | Embeddings, RAG chunk embedding |
+| InvokeModel API | `client.invokeModel()` | Embeddings, RAG chunk embedding, Image Generation |
 | Agent Runtime API | `agentRuntimeClient.retrieveAndGenerate()` / `.retrieve()` | Managed Knowledge Bases |
 
 ---
@@ -1942,6 +1944,171 @@ Returns `200 OK` — `Agent service is running`
 
 ---
 
+## API — Image Generation
+
+Generate images from text prompts or create variations of existing images using
+Amazon Bedrock's image models via the `InvokeModel` API.
+
+### Supported models
+
+| Model | Model ID | Notes |
+|-------|----------|-------|
+| Titan Image Generator G1 V2 **(default)** | `amazon.titan-image-generator-v2:0` | TEXT_IMAGE + IMAGE_VARIATION; no form required |
+| Titan Image Generator G1 V1 | `amazon.titan-image-generator-v1` | Previous generation |
+| Stability AI SDXL | `stability.stable-diffusion-xl-v1` | TEXT_IMAGE only; requires Stability AI form in AWS Console |
+
+### Response format
+
+All generated images are returned as **base64-encoded PNG strings** in the `images` array.
+
+```bash
+# Save the first generated image to a file
+curl -s -X POST http://localhost:8080/api/images/generate \
+     -H "Content-Type: application/json" \
+     -d '{ "prompt": "A photorealistic mountain sunset" }' \
+  | jq -r '.images[0]' | base64 -d > output.png
+```
+
+---
+
+### `POST /api/images/generate`
+
+Generate one or more images from a text prompt.
+
+#### Request
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `prompt` | `string` | Yes | Text description of the image (max 512 chars) |
+| `negativePrompt` | `string` | No | Concepts to exclude (e.g. `"blurry, watermark"`) |
+| `width` | `integer` | No | Width in pixels (64–2048, default 1024) |
+| `height` | `integer` | No | Height in pixels (64–2048, default 1024) |
+| `numberOfImages` | `integer` | No | Images to generate in one call (1–5, default 1) |
+| `cfgScale` | `number` | No | Prompt-adherence strength (1.1–10.0 Titan, default 8.0) |
+| `seed` | `long` | No | Seed for reproducibility (omit for random) |
+| `quality` | `string` | No | `"standard"` (faster) or `"premium"` (Titan V2 only) |
+| `modelId` | `string` | No | Override the default image model |
+
+#### Response
+
+```json
+{
+  "images": ["iVBORw0KGgoAAAANSUhEUgAA..."],
+  "imagesGenerated": 1,
+  "modelId": "amazon.titan-image-generator-v2:0",
+  "timestamp": "2025-04-18T00:00:00Z"
+}
+```
+
+#### Examples
+
+**Minimal — single image:**
+```bash
+curl -X POST http://localhost:8080/api/images/generate \
+     -H "Content-Type: application/json" \
+     -d '{ "prompt": "A photorealistic mountain sunset, golden hour, 8K" }' \
+  | jq -r '.images[0]' | base64 -d > sunset.png
+```
+
+**Multiple images with negative prompt:**
+```bash
+curl -X POST http://localhost:8080/api/images/generate \
+     -H "Content-Type: application/json" \
+     -d '{
+           "prompt":         "A serene Japanese zen garden with koi pond",
+           "negativePrompt": "people, animals, cartoon, blurry, watermark",
+           "width":          1024,
+           "height":         1024,
+           "numberOfImages": 3,
+           "cfgScale":       9.0,
+           "quality":        "premium"
+         }' \
+  | jq -r '.images[]' | while IFS= read -r img; do
+      echo "$img" | base64 -d > "garden_$(date +%s%N).png"
+    done
+```
+
+**Reproducible image with seed:**
+```bash
+curl -X POST http://localhost:8080/api/images/generate \
+     -H "Content-Type: application/json" \
+     -d '{
+           "prompt": "A futuristic city at night, neon lights",
+           "seed":   42
+         }' \
+  | jq -r '.images[0]' | base64 -d > city.png
+```
+
+**Use Stability AI SDXL:**
+```bash
+curl -X POST http://localhost:8080/api/images/generate \
+     -H "Content-Type: application/json" \
+     -d '{
+           "prompt":   "Epic fantasy landscape, oil painting style",
+           "modelId":  "stability.stable-diffusion-xl-v1",
+           "width":    1024,
+           "height":   1024,
+           "cfgScale": 10.0
+         }' \
+  | jq -r '.images[0]' | base64 -d > fantasy.png
+```
+
+---
+
+### `POST /api/images/variation`
+
+Generate one or more variations of an existing image.
+The input image must be base64-encoded (PNG or JPEG).
+Supported by Titan Image Generator models only.
+
+#### Request
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `inputImageBase64` | `string` | Yes | Base64-encoded source image (no `data:image/...` prefix) |
+| `prompt` | `string` | No | Text guidance for how the variation should differ |
+| `negativePrompt` | `string` | No | Concepts to exclude from the variation |
+| `similarityStrength` | `number` | No | How closely to match the input (0.2–1.0, default 0.7) |
+| `numberOfImages` | `integer` | No | Number of variations (1–5, default 1) |
+| `cfgScale` | `number` | No | Prompt-adherence scale |
+| `seed` | `long` | No | Seed for reproducibility |
+| `quality` | `string` | No | `"standard"` or `"premium"` (Titan V2 only) |
+| `modelId` | `string` | No | Override the default image model |
+
+#### Example
+
+```bash
+# Read an existing image as base64, then generate a variation
+INPUT_B64=$(base64 -w 0 input.png)
+
+curl -X POST http://localhost:8080/api/images/variation \
+     -H "Content-Type: application/json" \
+     -d "{
+           \"inputImageBase64\":  \"$INPUT_B64\",
+           \"prompt\":            \"same composition but at night with moonlight\",
+           \"similarityStrength\": 0.6
+         }" \
+  | jq -r '.images[0]' | base64 -d > variation.png
+```
+
+---
+
+### `GET /api/images/models`
+
+List all supported image models and their capabilities.
+
+```bash
+curl http://localhost:8080/api/images/models
+```
+
+---
+
+### `GET /api/images/health`
+
+Returns `200 OK` — `Image generation service is running`
+
+---
+
 ## Project structure
 
 ```
@@ -1961,7 +2128,8 @@ aws-bedrock-poc/
 │   │   │   │   ├── DocumentAnalysisController.java # /api/analysis/*
 │   │   │   │   ├── CodeGenerationController.java   # /api/code/*
 │   │   │   │   ├── KnowledgeBaseController.java    # /api/kb/*
-│   │   │   │   └── AgentController.java            # /api/agent/*
+│   │   │   │   ├── AgentController.java            # /api/agent/*
+│   │   │   │   └── ImageGenerationController.java  # /api/images/*
 │   │   │   ├── service/
 │   │   │   │   ├── ChatService.java                # Blocking Converse API
 │   │   │   │   ├── StreamingChatService.java       # ConverseStream + SseEmitter
@@ -1972,7 +2140,8 @@ aws-bedrock-poc/
 │   │   │   │   ├── DocumentAnalysisService.java    # Sentiment, NER, key phrases, classification, language
 │   │   │   │   ├── CodeGenerationService.java      # Generate, explain, review, convert, fix
 │   │   │   │   ├── KnowledgeBaseService.java       # Managed KB: RetrieveAndGenerate + Retrieve
-│   │   │   │   └── AgentService.java               # Agentic loop: tool definitions, dispatch, result handling
+│   │   │   │   ├── AgentService.java               # Agentic loop: tool definitions, dispatch, result handling
+│   │   │   │   └── ImageGenerationService.java     # InvokeModel: Titan + Stability AI image generation
 │   │   │   ├── model/
 │   │   │   │   ├── ChatMessage.java                # role + content pair
 │   │   │   │   ├── ChatRequest.java                # Chat POST body
@@ -2011,7 +2180,10 @@ aws-bedrock-poc/
 │   │   │   │   ├── KbRetrieveResponse.java         # Managed KB: chunks + scores (with RetrievedChunk inner class)
 │   │   │   │   ├── AgentRequest.java               # Agent POST body (message, tools, history)
 │   │   │   │   ├── AgentResponse.java              # Agent response (reply, toolCalls, iterations, usage)
-│   │   │   │   └── ToolCallRecord.java             # Single tool invocation log (name, input, output)
+│   │   │   │   ├── ToolCallRecord.java             # Single tool invocation log (name, input, output)
+│   │   │   │   ├── ImageGenerateRequest.java       # Image generation POST body
+│   │   │   │   ├── ImageVariationRequest.java      # Image variation POST body
+│   │   │   │   └── ImageGenerateResponse.java      # Base64 images + metadata
 │   │   │   └── exception/
 │   │   │       ├── BedrockException.java           # Bedrock API errors
 │   │   │       └── GlobalExceptionHandler.java     # RFC 7807 error responses
@@ -2026,7 +2198,8 @@ aws-bedrock-poc/
 │           ├── DocumentAnalysisServiceTest.java    # 12 tests — Document Analysis (mocked)
 │           ├── CodeGenerationServiceTest.java      # 16 tests — Code Generation (mocked)
 │           ├── KnowledgeBaseServiceTest.java       # 11 tests — Managed KB (mocked)
-│           └── AgentServiceTest.java               # 26 tests — Agent tool loop (mocked)
+│           ├── AgentServiceTest.java               # 26 tests — Agent tool loop (mocked)
+│           └── ImageGenerationServiceTest.java     # 12 tests — Image generation (mocked)
 ├── .vscode/
 │   └── launch.json                                 # AWS credentials (gitignored)
 ├── .gitignore
@@ -2045,7 +2218,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 mvn test
 All tests mock the Bedrock client — no AWS credentials or network access required.
 
 ```
-Tests run: 99, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 111, Failures: 0, Errors: 0, Skipped: 0
 ```
 
 ---
@@ -2087,5 +2260,5 @@ Tests run: 99, Failures: 0, Errors: 0, Skipped: 0
 | 7 | Code Generation (generate, explain, review, convert, fix) | ✅ Done |
 | 8 | RAG with Bedrock Knowledge Bases (managed) | ✅ Done |
 | 9 | Agents with tool / function calling | ✅ Done |
-| 10 | Image Generation | Planned |
+| 10 | Image Generation | ✅ Done |
 | 11 | Prompt Flows | Planned |

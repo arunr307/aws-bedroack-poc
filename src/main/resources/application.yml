@@ -48,6 +48,25 @@ aws:
       dimensions: 1024
       normalize: true   # L2-normalise vectors — enables dot-product as cosine similarity
 
+    # ── Image Generation ──────────────────────────────────────────
+    image:
+      # Amazon Titan Image Generator G1 V2 — no special form required.
+      # For Stability AI: stability.stable-diffusion-xl-v1
+      model-id: amazon.titan-image-generator-v2:0
+
+      # Default canvas size (pixels). Titan V2 supports 256–1408 in multiples of 64.
+      default-width: 1024
+      default-height: 1024
+
+      # Images returned per call (1–5)
+      default-number-of-images: 1
+
+      # CFG scale: how strongly the model follows the prompt (1.1–10.0 for Titan)
+      default-cfg-scale: 8.0
+
+      # "standard" = faster generation; "premium" = higher detail (Titan V2 only)
+      default-quality: standard
+
     # ── Managed Knowledge Base (Bedrock Knowledge Bases) ─────────
     knowledge-base:
       # The Knowledge Base ID shown in AWS Console → Bedrock → Knowledge Bases.

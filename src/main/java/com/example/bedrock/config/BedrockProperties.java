@@ -66,6 +66,9 @@ public class BedrockProperties {
 
         /** Managed Knowledge Base settings. */
         private KnowledgeBase knowledgeBase = new KnowledgeBase();
+
+        /** Image generation settings. */
+        private Image image = new Image();
     }
 
     @Data
@@ -110,5 +113,37 @@ public class BedrockProperties {
          * Can be overridden per request via {@code topK}.
          */
         private int defaultTopK = 5;
+    }
+
+    @Data
+    public static class Image {
+        /**
+         * Default Bedrock image generation model.
+         * Amazon Titan Image Generator G1 V2 requires no special use-case form.
+         * Stability AI models ({@code stability.*}) require separate model access.
+         */
+        private String modelId = "amazon.titan-image-generator-v2:0";
+
+        /** Default output image width in pixels. */
+        private int defaultWidth = 1024;
+
+        /** Default output image height in pixels. */
+        private int defaultHeight = 1024;
+
+        /** Default number of images to generate per request (1–5). */
+        private int defaultNumberOfImages = 1;
+
+        /**
+         * Classifier-Free Guidance scale — controls how closely the model follows
+         * the prompt. Range 1.1–10.0 for Titan; 1–35 for Stability AI.
+         * Higher = more prompt-faithful; lower = more creative.
+         */
+        private double defaultCfgScale = 8.0;
+
+        /**
+         * Default output quality for Titan Image Generator V2.
+         * {@code "standard"} (faster) or {@code "premium"} (higher detail).
+         */
+        private String defaultQuality = "standard";
     }
 }
