@@ -50,9 +50,10 @@ aws:
 
     # ── Image Generation ──────────────────────────────────────────
     image:
-      # Amazon Titan Image Generator G1 V2 — no special form required.
+      # Amazon Nova Canvas — the current-generation Amazon image model.
+      # No special use-case form required.
       # For Stability AI: stability.stable-diffusion-xl-v1
-      model-id: amazon.titan-image-generator-v2:0
+      model-id: amazon.nova-canvas-v1:0
 
       # Default canvas size (pixels). Titan V2 supports 256–1408 in multiples of 64.
       default-width: 1024

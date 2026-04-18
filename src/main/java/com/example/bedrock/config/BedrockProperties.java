@@ -119,10 +119,11 @@ public class BedrockProperties {
     public static class Image {
         /**
          * Default Bedrock image generation model.
-         * Amazon Titan Image Generator G1 V2 requires no special use-case form.
+         * Amazon Nova Canvas is the current-generation Amazon image model and
+         * requires no special use-case form.
          * Stability AI models ({@code stability.*}) require separate model access.
          */
-        private String modelId = "amazon.titan-image-generator-v2:0";
+        private String modelId = "amazon.nova-canvas-v1:0";
 
         /** Default output image width in pixels. */
         private int defaultWidth = 1024;

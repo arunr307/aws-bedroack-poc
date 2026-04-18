@@ -1953,8 +1953,7 @@ Amazon Bedrock's image models via the `InvokeModel` API.
 
 | Model | Model ID | Notes |
 |-------|----------|-------|
-| Titan Image Generator G1 V2 **(default)** | `amazon.titan-image-generator-v2:0` | TEXT_IMAGE + IMAGE_VARIATION; no form required |
-| Titan Image Generator G1 V1 | `amazon.titan-image-generator-v1` | Previous generation |
+| Amazon Nova Canvas **(default)** | `amazon.nova-canvas-v1:0` | TEXT_IMAGE + IMAGE_VARIATION; no form required |
 | Stability AI SDXL | `stability.stable-diffusion-xl-v1` | TEXT_IMAGE only; requires Stability AI form in AWS Console |
 
 ### Response format
@@ -1986,8 +1985,8 @@ Generate one or more images from a text prompt.
 | `numberOfImages` | `integer` | No | Images to generate in one call (1–5, default 1) |
 | `cfgScale` | `number` | No | Prompt-adherence strength (1.1–10.0 Titan, default 8.0) |
 | `seed` | `long` | No | Seed for reproducibility (omit for random) |
-| `quality` | `string` | No | `"standard"` (faster) or `"premium"` (Titan V2 only) |
-| `modelId` | `string` | No | Override the default image model |
+| `quality` | `string` | No | `"standard"` (faster) or `"premium"` (Nova Canvas / Titan V2) |
+| `modelId` | `string` | No | Override the default model (default: `amazon.nova-canvas-v1:0`) |
 
 #### Response
 
@@ -2072,8 +2071,8 @@ Supported by Titan Image Generator models only.
 | `numberOfImages` | `integer` | No | Number of variations (1–5, default 1) |
 | `cfgScale` | `number` | No | Prompt-adherence scale |
 | `seed` | `long` | No | Seed for reproducibility |
-| `quality` | `string` | No | `"standard"` or `"premium"` (Titan V2 only) |
-| `modelId` | `string` | No | Override the default image model |
+| `quality` | `string` | No | `"standard"` or `"premium"` (Nova Canvas / Titan V2) |
+| `modelId` | `string` | No | Override the default model (default: `amazon.nova-canvas-v1:0`) |
 
 #### Example
 

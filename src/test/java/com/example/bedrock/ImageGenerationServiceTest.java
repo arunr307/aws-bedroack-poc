@@ -55,7 +55,7 @@ class ImageGenerationServiceTest {
         bedrock.setModelId("amazon.nova-lite-v1:0");
 
         BedrockProperties.Image image = new BedrockProperties.Image();
-        image.setModelId("amazon.titan-image-generator-v2:0");
+        image.setModelId("amazon.nova-canvas-v1:0");
         image.setDefaultWidth(1024);
         image.setDefaultHeight(1024);
         image.setDefaultNumberOfImages(1);
@@ -83,7 +83,7 @@ class ImageGenerationServiceTest {
         assertThat(response.getImages()).hasSize(1);
         assertThat(response.getImages().get(0)).isEqualTo(FAKE_IMAGE_B64);
         assertThat(response.getImagesGenerated()).isEqualTo(1);
-        assertThat(response.getModelId()).isEqualTo("amazon.titan-image-generator-v2:0");
+        assertThat(response.getModelId()).isEqualTo("amazon.nova-canvas-v1:0");
         assertThat(response.getTimestamp()).isNotNull();
     }
 
@@ -135,17 +135,17 @@ class ImageGenerationServiceTest {
     }
 
     @Test
-    void generateImage_modelOverride_usesTitanV1() throws Exception {
+    void generateImage_modelOverride_usesSpecifiedModel() throws Exception {
         stubTitanResponse(List.of(FAKE_IMAGE_B64));
 
         ImageGenerateRequest request = ImageGenerateRequest.builder()
                 .prompt("Test prompt")
-                .modelId("amazon.titan-image-generator-v1")
+                .modelId("amazon.nova-canvas-v1:0")
                 .build();
 
         ImageGenerateResponse response = service.generateImage(request);
 
-        assertThat(response.getModelId()).isEqualTo("amazon.titan-image-generator-v1");
+        assertThat(response.getModelId()).isEqualTo("amazon.nova-canvas-v1:0");
     }
 
     // ── generateImage — Stability AI ─────────────────────────────────────────

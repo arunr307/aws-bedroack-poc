@@ -26,19 +26,18 @@ import java.util.List;
  *
  * <h2>Supported models</h2>
  * <ul>
- *   <li><strong>Amazon Titan Image Generator G1 V2</strong>
- *       ({@code amazon.titan-image-generator-v2:0}) — default, no special form needed.
+ *   <li><strong>Amazon Nova Canvas</strong>
+ *       ({@code amazon.nova-canvas-v1:0}) — default, current generation, no form needed.
  *       Supports TEXT_IMAGE and IMAGE_VARIATION tasks.</li>
- *   <li><strong>Amazon Titan Image Generator G1 V1</strong>
- *       ({@code amazon.titan-image-generator-v1}) — previous generation.</li>
  *   <li><strong>Stability AI SDXL</strong>
  *       ({@code stability.stable-diffusion-xl-v1}) — requires separate model-access form.
  *       Uses a different payload format; handled transparently by this service.</li>
  * </ul>
  *
  * <h2>Payload formats</h2>
- * <p>Titan and Stability AI use different JSON schemas. This service detects the model
- * family from the model ID prefix and routes to the correct builder/parser.
+ * <p>Amazon image models (Nova Canvas, Titan) share the same JSON schema.
+ * Stability AI uses a different schema. This service detects the model family
+ * from the model ID prefix and routes to the correct builder/parser.
  *
  * <h2>Response images</h2>
  * <p>All models return base64-encoded PNG strings. Callers can decode with

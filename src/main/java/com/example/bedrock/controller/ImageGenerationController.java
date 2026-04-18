@@ -103,21 +103,14 @@ public class ImageGenerationController {
     @GetMapping("/models")
     public ResponseEntity<Map<String, Object>> listModels() {
         return ResponseEntity.ok(Map.of(
-                "default", "amazon.titan-image-generator-v2:0",
+                "default", "amazon.nova-canvas-v1:0",
                 "models", Map.of(
-                        "amazon.titan-image-generator-v2:0", Map.of(
+                        "amazon.nova-canvas-v1:0", Map.of(
                                 "provider",     "Amazon",
                                 "tasks",        new String[]{"TEXT_IMAGE", "IMAGE_VARIATION"},
                                 "maxImages",    5,
                                 "quality",      new String[]{"standard", "premium"},
-                                "dimensions",   "256–1408 px (multiples of 64)",
-                                "formRequired", false
-                        ),
-                        "amazon.titan-image-generator-v1", Map.of(
-                                "provider",     "Amazon",
-                                "tasks",        new String[]{"TEXT_IMAGE", "IMAGE_VARIATION"},
-                                "maxImages",    5,
-                                "dimensions",   "512x512, 768x768, 512x768, 768x512, 1024x1024",
+                                "dimensions",   "320–2048 px (multiples of 64)",
                                 "formRequired", false
                         ),
                         "stability.stable-diffusion-xl-v1", Map.of(
