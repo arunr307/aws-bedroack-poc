@@ -68,6 +68,17 @@ aws:
       # "standard" = faster generation; "premium" = higher detail (Titan V2 only)
       default-quality: standard
 
+    # ── Prompt Flows ──────────────────────────────────────────────
+    flow:
+      # Flow ID from AWS Console → Bedrock → Flows → (your flow) → Copy ID
+      # Set via FLOW_ID env var in .vscode/launch.json for local dev.
+      # When blank, each invoke request must supply flowId explicitly.
+      default-flow-id: ${FLOW_ID:}
+
+      # Alias ID — use the TSTALIASID draft alias or a published alias ID.
+      # Set via FLOW_ALIAS_ID env var in .vscode/launch.json for local dev.
+      default-alias-id: ${FLOW_ALIAS_ID:}
+
     # ── Managed Knowledge Base (Bedrock Knowledge Bases) ─────────
     knowledge-base:
       # The Knowledge Base ID shown in AWS Console → Bedrock → Knowledge Bases.

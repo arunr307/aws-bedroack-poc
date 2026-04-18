@@ -115,15 +115,23 @@ public class ImageGenerationService {
     private ObjectNode buildTextToImagePayload(ImageGenerateRequest request, String modelId) {
         return isStabilityModel(modelId)
                 ? buildStabilityTextPayload(request)
-                : buildTitanTextToImagePayload(request);
+                : buildAmazonTextToImagePayload(request, modelId);
     }
 
     /**
-     * Builds the Titan Image Generator TEXT_IMAGE payload.
-     * Works for both V1 ({@code amazon.titan-image-generator-v1}) and
-     * V2 ({@code amazon.titan-image-generator-v2:0}).
+     * Builds the Amazon image model TEXT_IMAGE payload.
+     *
+     * <p>Works for:
+     * <ul>
+     *   <li><strong>Nova Canvas</strong> ({@code amazon.nova-canvas-v1:0}) — current generation.
+     *       The {@code quality} field is <em>not</em> supported and is intentionally omitted.</li>
+     *   <li><strong>Titan Image Generator V2</strong> ({@code amazon.titan-image-generator-v2:0}) —
+     *       supports {@code quality} ({@code "standard"} or {@code "premium"}).</li>
+     *   <li><strong>Titan Image Generator V1</strong> ({@code amazon.titan-image-generator-v1}) —
+     *       legacy; no {@code quality} field.</li>
+     * </ul>
      */
-    private ObjectNode buildTitanTextToImagePayload(ImageGenerateRequest request) {
+    private ObjectNode buildAmazonTextToImagePayload(ImageGenerateRequest request, String modelId) {
         BedrockProperties.Image cfg = properties.getBedrock().getImage();
 
         ObjectNode root = objectMapper.createObjectNode();
@@ -137,13 +145,16 @@ public class ImageGenerationService {
 
         putImageGenerationConfig(root, request.getWidth(), request.getHeight(),
                 request.getNumberOfImages(), request.getCfgScale(),
-                request.getSeed(), request.getQuality(), cfg);
+                request.getSeed(), request.getQuality(), cfg, modelId);
 
         return root;
     }
 
     /**
-     * Builds the Titan IMAGE_VARIATION payload.
+     * Builds the Amazon IMAGE_VARIATION payload.
+     *
+     * <p>Supported by Titan Image Generator V1/V2 and Nova Canvas.
+     * Nova Canvas omits the {@code quality} field (it is Titan V2-only).
      */
     private ObjectNode buildImageVariationPayload(ImageVariationRequest request,
                                                    String modelId) {
@@ -164,10 +175,10 @@ public class ImageGenerationService {
         params.put("similarityStrength",
                 request.getSimilarityStrength() != null ? request.getSimilarityStrength() : 0.7);
 
-        // Titan variation always outputs at the source image dimensions; provide defaults
+        // Output dimensions default to the source image; provide config defaults
         putImageGenerationConfig(root, null, null,
                 request.getNumberOfImages(), request.getCfgScale(),
-                request.getSeed(), request.getQuality(), cfg);
+                request.getSeed(), request.getQuality(), cfg, modelId);
 
         return root;
     }
@@ -203,12 +214,20 @@ public class ImageGenerationService {
         return root;
     }
 
-    /** Writes the {@code imageGenerationConfig} block into a Titan payload. */
+    /**
+     * Writes the {@code imageGenerationConfig} block into an Amazon image model payload.
+     *
+     * <p>The {@code quality} field is written only for Titan Image Generator V2 models.
+     * Nova Canvas does <em>not</em> accept this field and will return an error if it is present.
+     *
+     * @param modelId used to determine whether to include {@code quality}
+     */
     private void putImageGenerationConfig(ObjectNode root,
                                           Integer width, Integer height,
                                           Integer numberOfImages, Double cfgScale,
                                           Long seed, String quality,
-                                          BedrockProperties.Image cfg) {
+                                          BedrockProperties.Image cfg,
+                                          String modelId) {
         ObjectNode config = root.putObject("imageGenerationConfig");
         config.put("numberOfImages", numberOfImages != null ? numberOfImages : cfg.getDefaultNumberOfImages());
         config.put("width",          width          != null ? width          : cfg.getDefaultWidth());
@@ -217,10 +236,13 @@ public class ImageGenerationService {
         if (seed != null && seed != 0) {
             config.put("seed", seed);
         }
-        if (hasText(quality)) {
-            config.put("quality", quality);
-        } else if (hasText(cfg.getDefaultQuality())) {
-            config.put("quality", cfg.getDefaultQuality());
+        // quality is a Titan V2-only field — Nova Canvas and Titan V1 do not support it
+        if (isTitanV2Model(modelId)) {
+            if (hasText(quality)) {
+                config.put("quality", quality);
+            } else if (hasText(cfg.getDefaultQuality())) {
+                config.put("quality", cfg.getDefaultQuality());
+            }
         }
     }
 
@@ -242,7 +264,17 @@ public class ImageGenerationService {
         } catch (BedrockException ex) {
             throw ex;
         } catch (Exception ex) {
-            throw new BedrockException("InvokeModel (image generation) failed: " + ex.getMessage(), ex);
+            String msg = ex.getMessage() != null ? ex.getMessage() : "";
+            if (msg.contains("Legacy") || msg.contains("legacy")
+                    || (msg.contains("Access denied") && msg.contains("30 days"))) {
+                throw new BedrockException(
+                        "Image model '" + modelId + "' is inactive or legacy in your AWS account. "
+                        + "Fix: AWS Console → Bedrock → Model access → Manage model access → "
+                        + "re-enable '" + modelId + "' (or choose a different model and pass it as 'modelId' in the request). "
+                        + "AWS requires models to be actively enabled; access may lapse after 30 days of inactivity.",
+                        ex);
+            }
+            throw new BedrockException("InvokeModel (image generation) failed: " + msg, ex);
         }
     }
 
@@ -323,6 +355,14 @@ public class ImageGenerationService {
 
     private boolean isStabilityModel(String modelId) {
         return modelId != null && modelId.startsWith("stability.");
+    }
+
+    /**
+     * Returns {@code true} for Titan Image Generator V2, which is the only Amazon
+     * image model that accepts the {@code quality} field in its payload.
+     */
+    private boolean isTitanV2Model(String modelId) {
+        return modelId != null && modelId.contains("titan-image-generator-v2");
     }
 
     private boolean hasText(String s) {

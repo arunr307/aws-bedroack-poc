@@ -22,10 +22,11 @@ AI use cases via a clean REST API — without any model-specific payload formats
 12. [API — Managed Knowledge Base (RAG)](#api--managed-knowledge-base-rag)
 13. [API — Agent Chat (Tool / Function Calling)](#api--agent-chat-tool--function-calling)
 14. [API — Image Generation](#api--image-generation)
-15. [Project structure](#project-structure)
-16. [Running tests](#running-tests)
-17. [Supported Bedrock models](#supported-bedrock-models)
-18. [Roadmap](#roadmap)
+15. [API — Prompt Flows](#api--prompt-flows)
+16. [Project structure](#project-structure)
+17. [Running tests](#running-tests)
+18. [Supported Bedrock models](#supported-bedrock-models)
+19. [Roadmap](#roadmap)
 
 ---
 
@@ -51,17 +52,21 @@ Client (curl / Postman / UI)
 │  AgentController           ──▶  AgentService               │
 │                                    │  (agentic tool loop)  │
 │  ImageGenerationController ──▶  ImageGenerationService     │
+│  PromptFlowController      ──▶  PromptFlowService          │
 │                     BedrockRuntimeClient  (sync)           │
 │                     BedrockRuntimeAsyncClient (streaming)  │
 │                     BedrockAgentRuntimeClient (KB)         │
+│                     BedrockAgentRuntimeAsyncClient (Flows) │
+│                     BedrockAgentClient (Flow management)   │
 └────────────────────────────────────────────────────────────┘
                                 │
               ┌─────────────────┼──────────────────────────┐
               ▼                 ▼                  ▼        ▼
        Converse API       ConverseStream      InvokeModel  Agent Runtime
-    (Chat, Summarize,     (Stream Chat)       (Embeddings) (Knowledge Bases)
+    (Chat, Summarize,     (Stream Chat)       (Embeddings) (KB + Flows)
     RAG gen, Analysis,                        RAG chunks)
-    Code Generation)
+    Code Generation,
+    Agent loop)
               │                 │                  │        │
               └─────────────────┴──────────────────┴────────┘
                                 ▼
@@ -74,6 +79,8 @@ Client (curl / Postman / UI)
 | ConverseStream API | `asyncClient.converseStream()` | Streaming Chat |
 | InvokeModel API | `client.invokeModel()` | Embeddings, RAG chunk embedding, Image Generation |
 | Agent Runtime API | `agentRuntimeClient.retrieveAndGenerate()` / `.retrieve()` | Managed Knowledge Bases |
+| Flows API (async) | `agentRuntimeAsyncClient.invokeFlow()` | Prompt Flows — invoke |
+| Flows API (mgmt) | `agentClient.listFlows()` / `.getFlow()` / `.listFlowAliases()` | Prompt Flows — list & inspect |
 
 ---
 
@@ -177,6 +184,10 @@ aws:
     max-tokens: 2048                    # max tokens per response
     temperature: 0.7                    # 0.0 = deterministic, 1.0 = creative
     max-conversation-turns: 10          # turns kept in chat history
+
+    flow:
+      default-flow-id: ${FLOW_ID:}      # Bedrock Prompt Flow ID
+      default-alias-id: ${FLOW_ALIAS_ID:} # Flow Alias ID (TSTALIASID = draft)
 ```
 
 ### Credential resolution order (most secure first)
@@ -1985,7 +1996,7 @@ Generate one or more images from a text prompt.
 | `numberOfImages` | `integer` | No | Images to generate in one call (1–5, default 1) |
 | `cfgScale` | `number` | No | Prompt-adherence strength (1.1–10.0 Titan, default 8.0) |
 | `seed` | `long` | No | Seed for reproducibility (omit for random) |
-| `quality` | `string` | No | `"standard"` (faster) or `"premium"` (Nova Canvas / Titan V2) |
+| `quality` | `string` | No | `"standard"` or `"premium"` — **Titan V2 only** (Nova Canvas ignores this field) |
 | `modelId` | `string` | No | Override the default model (default: `amazon.nova-canvas-v1:0`) |
 
 #### Response
@@ -2009,7 +2020,7 @@ curl -X POST http://localhost:8080/api/images/generate \
   | jq -r '.images[0]' | base64 -d > sunset.png
 ```
 
-**Multiple images with negative prompt:**
+**Multiple images with negative prompt (Nova Canvas):**
 ```bash
 curl -X POST http://localhost:8080/api/images/generate \
      -H "Content-Type: application/json" \
@@ -2019,12 +2030,24 @@ curl -X POST http://localhost:8080/api/images/generate \
            "width":          1024,
            "height":         1024,
            "numberOfImages": 3,
-           "cfgScale":       9.0,
-           "quality":        "premium"
+           "cfgScale":       9.0
          }' \
   | jq -r '.images[]' | while IFS= read -r img; do
       echo "$img" | base64 -d > "garden_$(date +%s%N).png"
     done
+```
+
+**Premium quality with Titan V2 (`quality` field is Titan V2-only):**
+```bash
+curl -X POST http://localhost:8080/api/images/generate \
+     -H "Content-Type: application/json" \
+     -d '{
+           "prompt":   "A serene Japanese zen garden with koi pond",
+           "modelId":  "amazon.titan-image-generator-v2:0",
+           "quality":  "premium",
+           "cfgScale": 9.0
+         }' \
+  | jq -r '.images[0]' | base64 -d > garden.png
 ```
 
 **Reproducible image with seed:**
@@ -2071,7 +2094,7 @@ Supported by Titan Image Generator models only.
 | `numberOfImages` | `integer` | No | Number of variations (1–5, default 1) |
 | `cfgScale` | `number` | No | Prompt-adherence scale |
 | `seed` | `long` | No | Seed for reproducibility |
-| `quality` | `string` | No | `"standard"` or `"premium"` (Nova Canvas / Titan V2) |
+| `quality` | `string` | No | `"standard"` or `"premium"` — **Titan V2 only** (Nova Canvas ignores this field) |
 | `modelId` | `string` | No | Override the default model (default: `amazon.nova-canvas-v1:0`) |
 
 #### Example
@@ -2108,6 +2131,304 @@ Returns `200 OK` — `Image generation service is running`
 
 ---
 
+## API — Prompt Flows
+
+[Amazon Bedrock Prompt Flows](https://docs.aws.amazon.com/bedrock/latest/userguide/flows.html)
+lets you visually chain prompts, models, knowledge bases, and Lambda functions into a
+reusable **flow** — then invoke it with a single API call.
+This service handles both **execution** (run a flow with an input) and **management**
+(list flows, inspect metadata, list aliases).
+
+### How it works
+
+```
+POST /api/flows/invoke
+        │
+        ▼
+ resolve flowId + aliasId
+ (request body overrides config defaults)
+        │
+        ▼
+ BedrockAgentRuntimeAsyncClient.invokeFlow()
+        │
+        ▼
+ InvokeFlowResponseHandler (visitor per event type)
+   ├── FlowOutputEvent  → collect content per Output node
+   └── FlowCompletionEvent → capture completion reason
+        │
+        ▼
+ FlowInvokeResponse
+   ├── outputs[]       (all Output node results)
+   ├── primaryOutput   (first output — convenience field)
+   └── completionReason ("SUCCESS" | "FAILURE")
+```
+
+> **SDK note:** In AWS SDK 2.27.21 `invokeFlow` is only available on the
+> **async** client (`BedrockAgentRuntimeAsyncClient`). The service calls `.join()`
+> internally, so the endpoint behaves like any other synchronous REST call.
+
+### Local setup for Prompt Flows
+
+#### Step 1 — Create a flow in AWS Console
+
+1. Open **AWS Console → Amazon Bedrock → Flows → Create flow**
+2. Drag nodes onto the canvas — at minimum you need an **Input** node, one or more
+   **Prompt** nodes wired to a model, and an **Output** node
+3. Click **Save**, then **Prepare** — wait for status to show `Prepared`
+
+#### Step 2 — Get the Flow ID and Alias ID
+
+- The **Flow ID** is shown in the flow detail page (e.g. `ABCDEF1234`)
+- Click **Aliases** — the draft alias always has ID **`TSTALIASID`**
+- To create a published alias: **Versions → Create version → Aliases → Create alias**
+
+#### Step 3 — Add IDs to VS Code launch config
+
+```json
+"env": {
+    "AWS_ACCESS_KEY_ID":     "YOUR_ACCESS_KEY",
+    "AWS_SECRET_ACCESS_KEY": "YOUR_SECRET_KEY",
+    "AWS_REGION":            "us-east-1",
+    "FLOW_ID":               "ABCDEF1234",
+    "FLOW_ALIAS_ID":         "TSTALIASID"
+}
+```
+
+#### Verify setup
+
+```bash
+curl http://localhost:8080/api/flows/health
+# {"status":"UP","service":"prompt-flows","defaultFlowId":"ABCDEF1234","defaultAliasId":"TSTALIASID",...}
+```
+
+If either ID is missing the status will be `UNCONFIGURED`.
+
+---
+
+### `POST /api/flows/invoke`
+
+Invokes a Bedrock Prompt Flow with an input text and returns all outputs produced
+by Output nodes, the completion reason, and a server-side timestamp.
+
+#### Request
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `input` | `string` | Yes | — | Text sent to the flow's Input node (max 100 000 chars) |
+| `flowId` | `string` | No | `FLOW_ID` env var | Override which flow to invoke |
+| `flowAliasId` | `string` | No | `FLOW_ALIAS_ID` env var | Override the alias (version) to use |
+| `inputNodeName` | `string` | No | `"FlowInputNode"` | Name of the Input node in the flow |
+| `enableTrace` | `boolean` | No | `false` | Reserved for future use — trace events always empty in SDK 2.27.21 |
+
+#### Response
+
+```json
+{
+  "flowId":           "ABCDEF1234",
+  "flowAliasId":      "TSTALIASID",
+  "outputs": [
+    {
+      "nodeName":       "FlowOutputNode",
+      "nodeOutputName": "OUTPUT_NODE",
+      "content":        "AWS Lambda is a serverless compute service that runs your code..."
+    }
+  ],
+  "primaryOutput":    "AWS Lambda is a serverless compute service that runs your code...",
+  "completionReason": "SUCCESS",
+  "traceEvents":      [],
+  "timestamp":        "2025-04-18T10:00:00Z"
+}
+```
+
+- `outputs` — one entry per Output node (most flows have exactly one)
+- `primaryOutput` — convenience field: `outputs[0].content` (or `null` if no output was produced)
+- `completionReason` — `"SUCCESS"` for normal completion, `"FAILURE"` if the flow aborted
+
+#### Examples
+
+**Invoke the configured default flow:**
+```bash
+curl -X POST http://localhost:8080/api/flows/invoke \
+     -H "Content-Type: application/json" \
+     -d '{ "input": "What are the key benefits of serverless architecture?" }'
+```
+
+**Override flow IDs per request:**
+```bash
+curl -X POST http://localhost:8080/api/flows/invoke \
+     -H "Content-Type: application/json" \
+     -d '{
+           "flowId":      "OTHER-FLOW-9999",
+           "flowAliasId": "TSTALIASID",
+           "input":       "Summarise this document for me."
+         }'
+```
+
+**Custom input node name (advanced — only if your flow's Input node is not `FlowInputNode`):**
+```bash
+curl -X POST http://localhost:8080/api/flows/invoke \
+     -H "Content-Type: application/json" \
+     -d '{
+           "input":         "Analyse the sentiment of this review.",
+           "inputNodeName": "DocumentInput"
+         }'
+```
+
+**Save the primary output to a variable:**
+```bash
+ANSWER=$(curl -s -X POST http://localhost:8080/api/flows/invoke \
+  -H "Content-Type: application/json" \
+  -d '{ "input": "Give me a one-sentence definition of AWS Bedrock." }' \
+  | jq -r .primaryOutput)
+
+echo "$ANSWER"
+```
+
+---
+
+### `GET /api/flows`
+
+Lists all Prompt Flows in the account and region — useful for discovering Flow IDs
+without going to the AWS Console.
+
+```bash
+curl http://localhost:8080/api/flows
+```
+
+```json
+[
+  {
+    "id":          "ABCDEF1234",
+    "name":        "My Summarizer Flow",
+    "status":      "Prepared",
+    "description": "Summarizes any document into bullet points",
+    "updatedAt":   "2025-04-17T10:00:00Z"
+  },
+  {
+    "id":          "BCDEF12345",
+    "name":        "Q&A Flow",
+    "status":      "Prepared",
+    "description": "Answers questions from a knowledge base",
+    "updatedAt":   "2025-04-17T11:00:00Z"
+  }
+]
+```
+
+---
+
+### `GET /api/flows/{flowId}`
+
+Returns detailed metadata for a specific flow.
+
+```bash
+curl http://localhost:8080/api/flows/ABCDEF1234
+```
+
+```json
+{
+  "id":          "ABCDEF1234",
+  "name":        "My Summarizer Flow",
+  "status":      "Prepared",
+  "description": "Summarizes any document into bullet points",
+  "createdAt":   "2025-04-17T09:00:00Z",
+  "updatedAt":   "2025-04-17T10:00:00Z"
+}
+```
+
+---
+
+### `GET /api/flows/{flowId}/aliases`
+
+Lists all aliases for a specific flow.
+Use this to find the Alias ID to pass in invoke requests.
+
+```bash
+curl http://localhost:8080/api/flows/ABCDEF1234/aliases
+```
+
+```json
+[
+  {
+    "id":          "TSTALIASID",
+    "name":        "Draft",
+    "description": "Working draft — changes with each Prepare",
+    "flowId":      "ABCDEF1234",
+    "createdAt":   "2025-04-17T09:00:00Z",
+    "updatedAt":   "2025-04-18T08:00:00Z"
+  },
+  {
+    "id":          "V1ALIASID1",
+    "name":        "v1-production",
+    "description": "Stable production alias pointing to version 1",
+    "flowId":      "ABCDEF1234",
+    "createdAt":   "2025-04-17T12:00:00Z",
+    "updatedAt":   "2025-04-17T12:00:00Z"
+  }
+]
+```
+
+> **Draft alias:** `TSTALIASID` always points to the latest prepared version — ideal for
+> development iteration. Create a named alias once you want to pin to a specific version.
+
+---
+
+### `GET /api/flows/health`
+
+Returns the Prompt Flow configuration status.
+
+```bash
+curl http://localhost:8080/api/flows/health
+```
+
+**When both IDs are configured:**
+```json
+{
+  "status":         "UP",
+  "service":        "prompt-flows",
+  "defaultFlowId":  "ABCDEF1234",
+  "defaultAliasId": "TSTALIASID",
+  "hint":           "Ready — POST /api/flows/invoke with your input"
+}
+```
+
+**When IDs are missing:**
+```json
+{
+  "status":         "UNCONFIGURED",
+  "service":        "prompt-flows",
+  "defaultFlowId":  "(not set — add FLOW_ID to launch.json)",
+  "defaultAliasId": "(not set — add FLOW_ALIAS_ID to launch.json)",
+  "hint":           "Create a flow in AWS Console → Bedrock → Flows, then set FLOW_ID and FLOW_ALIAS_ID"
+}
+```
+
+---
+
+### End-to-end walkthrough
+
+```bash
+# 1. Check configuration
+curl http://localhost:8080/api/flows/health | jq .
+
+# 2. Discover flows in your account
+curl http://localhost:8080/api/flows | jq '[.[] | {id, name, status}]'
+
+# 3. Pick a flow and list its aliases
+FLOW_ID="ABCDEF1234"
+curl http://localhost:8080/api/flows/$FLOW_ID/aliases | jq '[.[] | {id, name}]'
+
+# 4. Invoke the flow
+curl -s -X POST http://localhost:8080/api/flows/invoke \
+  -H "Content-Type: application/json" \
+  -d "{
+        \"flowId\":      \"$FLOW_ID\",
+        \"flowAliasId\": \"TSTALIASID\",
+        \"input\":       \"Explain the benefits of using AWS Fargate over EC2.\"
+      }" | jq '{primaryOutput, completionReason}'
+```
+
+---
+
 ## Project structure
 
 ```
@@ -2128,7 +2449,8 @@ aws-bedrock-poc/
 │   │   │   │   ├── CodeGenerationController.java   # /api/code/*
 │   │   │   │   ├── KnowledgeBaseController.java    # /api/kb/*
 │   │   │   │   ├── AgentController.java            # /api/agent/*
-│   │   │   │   └── ImageGenerationController.java  # /api/images/*
+│   │   │   │   ├── ImageGenerationController.java  # /api/images/*
+│   │   │   │   └── PromptFlowController.java       # /api/flows/*
 │   │   │   ├── service/
 │   │   │   │   ├── ChatService.java                # Blocking Converse API
 │   │   │   │   ├── StreamingChatService.java       # ConverseStream + SseEmitter
@@ -2140,7 +2462,8 @@ aws-bedrock-poc/
 │   │   │   │   ├── CodeGenerationService.java      # Generate, explain, review, convert, fix
 │   │   │   │   ├── KnowledgeBaseService.java       # Managed KB: RetrieveAndGenerate + Retrieve
 │   │   │   │   ├── AgentService.java               # Agentic loop: tool definitions, dispatch, result handling
-│   │   │   │   └── ImageGenerationService.java     # InvokeModel: Titan + Stability AI image generation
+│   │   │   │   ├── ImageGenerationService.java     # InvokeModel: Titan + Stability AI image generation
+│   │   │   │   └── PromptFlowService.java          # invokeFlow (async) + listFlows / getFlow / listAliases
 │   │   │   ├── model/
 │   │   │   │   ├── ChatMessage.java                # role + content pair
 │   │   │   │   ├── ChatRequest.java                # Chat POST body
@@ -2182,7 +2505,10 @@ aws-bedrock-poc/
 │   │   │   │   ├── ToolCallRecord.java             # Single tool invocation log (name, input, output)
 │   │   │   │   ├── ImageGenerateRequest.java       # Image generation POST body
 │   │   │   │   ├── ImageVariationRequest.java      # Image variation POST body
-│   │   │   │   └── ImageGenerateResponse.java      # Base64 images + metadata
+│   │   │   │   ├── ImageGenerateResponse.java      # Base64 images + metadata
+│   │   │   │   ├── FlowInvokeRequest.java          # Prompt Flow invoke POST body
+│   │   │   │   ├── FlowInvokeResponse.java         # Flow outputs + completion reason
+│   │   │   │   └── FlowNodeOutput.java             # Single Output node result (nodeName + content)
 │   │   │   └── exception/
 │   │   │       ├── BedrockException.java           # Bedrock API errors
 │   │   │       └── GlobalExceptionHandler.java     # RFC 7807 error responses
@@ -2198,7 +2524,8 @@ aws-bedrock-poc/
 │           ├── CodeGenerationServiceTest.java      # 16 tests — Code Generation (mocked)
 │           ├── KnowledgeBaseServiceTest.java       # 11 tests — Managed KB (mocked)
 │           ├── AgentServiceTest.java               # 26 tests — Agent tool loop (mocked)
-│           └── ImageGenerationServiceTest.java     # 12 tests — Image generation (mocked)
+│           ├── ImageGenerationServiceTest.java     # 12 tests — Image generation (mocked)
+│           └── PromptFlowServiceTest.java          # 14 tests — Prompt Flows (mocked)
 ├── .vscode/
 │   └── launch.json                                 # AWS credentials (gitignored)
 ├── .gitignore
@@ -2217,7 +2544,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 mvn test
 All tests mock the Bedrock client — no AWS credentials or network access required.
 
 ```
-Tests run: 111, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 125, Failures: 0, Errors: 0, Skipped: 0
 ```
 
 ---
@@ -2260,4 +2587,4 @@ Tests run: 111, Failures: 0, Errors: 0, Skipped: 0
 | 8 | RAG with Bedrock Knowledge Bases (managed) | ✅ Done |
 | 9 | Agents with tool / function calling | ✅ Done |
 | 10 | Image Generation | ✅ Done |
-| 11 | Prompt Flows | Planned |
+| 11 | Prompt Flows | ✅ Done |

@@ -69,6 +69,9 @@ public class BedrockProperties {
 
         /** Image generation settings. */
         private Image image = new Image();
+
+        /** Prompt Flow settings. */
+        private Flow flow = new Flow();
     }
 
     @Data
@@ -146,5 +149,22 @@ public class BedrockProperties {
          * {@code "standard"} (faster) or {@code "premium"} (higher detail).
          */
         private String defaultQuality = "standard";
+    }
+
+    @Data
+    public static class Flow {
+        /**
+         * Default Flow ID from AWS Console → Bedrock → Flows.
+         * Set via the {@code FLOW_ID} environment variable for local development.
+         * When blank, a Flow ID must be supplied in each request.
+         */
+        private String defaultFlowId = "";
+
+        /**
+         * Default Flow Alias ID (e.g. {@code TSTALIASID} for the draft alias).
+         * Set via the {@code FLOW_ALIAS_ID} environment variable for local development.
+         * When blank, an alias ID must be supplied in each request.
+         */
+        private String defaultAliasId = "";
     }
 }

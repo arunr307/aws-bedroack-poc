@@ -10,6 +10,8 @@ import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.bedrockagent.BedrockAgentClient;
+import software.amazon.awssdk.services.bedrockagentruntime.BedrockAgentRuntimeAsyncClient;
 import software.amazon.awssdk.services.bedrockagentruntime.BedrockAgentRuntimeClient;
 import software.amazon.awssdk.services.bedrockruntime.BedrockRuntimeAsyncClient;
 import software.amazon.awssdk.services.bedrockruntime.BedrockRuntimeClient;
@@ -92,6 +94,47 @@ public class BedrockConfig {
         log.info("Initialising BedrockAgentRuntimeClient — region={}", region);
 
         return BedrockAgentRuntimeClient.builder()
+                .region(region)
+                .credentialsProvider(credentialsProvider)
+                .build();
+    }
+
+    /**
+     * Async Agent Runtime client used exclusively by
+     * {@link com.example.bedrock.service.PromptFlowService} to invoke Prompt Flows.
+     *
+     * <p>In SDK 2.27.21 the {@code invokeFlow} API is only available on the
+     * <em>async</em> client — the sync client does not expose it. We call
+     * {@code .join()} inside the service, so the async completion is transparent
+     * to callers.
+     */
+    @Bean
+    public BedrockAgentRuntimeAsyncClient bedrockAgentRuntimeAsyncClient() {
+        AwsCredentialsProvider credentialsProvider = resolveCredentialsProvider();
+        Region region = Region.of(properties.getRegion());
+
+        log.info("Initialising BedrockAgentRuntimeAsyncClient — region={}", region);
+
+        return BedrockAgentRuntimeAsyncClient.builder()
+                .region(region)
+                .credentialsProvider(credentialsProvider)
+                .build();
+    }
+
+    /**
+     * Management-plane client for Bedrock Flows.
+     *
+     * <p>Used to list flows and fetch flow/alias metadata.
+     * Flow <em>execution</em> uses {@link BedrockAgentRuntimeAsyncClient} instead.
+     */
+    @Bean
+    public BedrockAgentClient bedrockAgentClient() {
+        AwsCredentialsProvider credentialsProvider = resolveCredentialsProvider();
+        Region region = Region.of(properties.getRegion());
+
+        log.info("Initialising BedrockAgentClient — region={}", region);
+
+        return BedrockAgentClient.builder()
                 .region(region)
                 .credentialsProvider(credentialsProvider)
                 .build();

@@ -1,5 +1,6 @@
 package com.example.bedrock.controller;
 
+import com.example.bedrock.config.BedrockProperties;
 import com.example.bedrock.model.ImageGenerateRequest;
 import com.example.bedrock.model.ImageGenerateResponse;
 import com.example.bedrock.model.ImageVariationRequest;
@@ -46,6 +47,7 @@ import java.util.Map;
 public class ImageGenerationController {
 
     private final ImageGenerationService imageGenerationService;
+    private final BedrockProperties properties;
 
     /**
      * Generate one or more images from a text prompt.
@@ -102,16 +104,28 @@ public class ImageGenerationController {
      */
     @GetMapping("/models")
     public ResponseEntity<Map<String, Object>> listModels() {
+        String configuredDefault = properties.getBedrock().getImage().getModelId();
         return ResponseEntity.ok(Map.of(
-                "default", "amazon.nova-canvas-v1:0",
+                "configuredDefault", configuredDefault,
+                "note", "If the default model returns a 'Legacy' error, re-enable it in "
+                        + "AWS Console → Bedrock → Model access, or pass a different 'modelId' in your request.",
                 "models", Map.of(
                         "amazon.nova-canvas-v1:0", Map.of(
                                 "provider",     "Amazon",
                                 "tasks",        new String[]{"TEXT_IMAGE", "IMAGE_VARIATION"},
                                 "maxImages",    5,
+                                "dimensions",   "320–2048 px (multiples of 64)",
+                                "formRequired", false,
+                                "qualityField", "NOT supported — Titan V2 only"
+                        ),
+                        "amazon.titan-image-generator-v2:0", Map.of(
+                                "provider",     "Amazon",
+                                "tasks",        new String[]{"TEXT_IMAGE", "IMAGE_VARIATION"},
+                                "maxImages",    5,
                                 "quality",      new String[]{"standard", "premium"},
                                 "dimensions",   "320–2048 px (multiples of 64)",
-                                "formRequired", false
+                                "formRequired", false,
+                                "qualityField", "supported"
                         ),
                         "stability.stable-diffusion-xl-v1", Map.of(
                                 "provider",     "Stability AI",
@@ -127,11 +141,19 @@ public class ImageGenerationController {
 
     /**
      * Health-check endpoint for the image generation service.
+     * Reports the configured default model and a reminder to verify model access.
      *
-     * @return {@code 200 OK} with a status message
+     * @return {@code 200 OK} with status and configuration
      */
     @GetMapping("/health")
-    public ResponseEntity<String> health() {
-        return ResponseEntity.ok("Image generation service is running");
+    public ResponseEntity<Map<String, String>> health() {
+        String modelId = properties.getBedrock().getImage().getModelId();
+        return ResponseEntity.ok(Map.of(
+                "status",  "UP",
+                "service", "image-generation",
+                "defaultModel", modelId,
+                "hint", "If you see a 'Legacy' error, re-enable '" + modelId
+                        + "' in AWS Console → Bedrock → Model access → Manage model access"
+        ));
     }
 }
