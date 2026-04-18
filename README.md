@@ -20,10 +20,11 @@ AI use cases via a clean REST API — without any model-specific payload formats
 10. [API — Document Analysis](#api--document-analysis)
 11. [API — Code Generation](#api--code-generation)
 12. [API — Managed Knowledge Base (RAG)](#api--managed-knowledge-base-rag)
-13. [Project structure](#project-structure)
-14. [Running tests](#running-tests)
-15. [Supported Bedrock models](#supported-bedrock-models)
-16. [Roadmap](#roadmap)
+13. [API — Agent Chat (Tool / Function Calling)](#api--agent-chat-tool--function-calling)
+14. [Project structure](#project-structure)
+15. [Running tests](#running-tests)
+16. [Supported Bedrock models](#supported-bedrock-models)
+17. [Roadmap](#roadmap)
 
 ---
 
@@ -46,7 +47,8 @@ Client (curl / Postman / UI)
 │  DocumentAnalysisController──▶  DocumentAnalysisService    │
 │  CodeGenerationController  ──▶  CodeGenerationService      │
 │  KnowledgeBaseController   ──▶  KnowledgeBaseService       │
-│                                    │                       │
+│  AgentController           ──▶  AgentService               │
+│                                    │  (agentic tool loop)  │
 │                     BedrockRuntimeClient  (sync)           │
 │                     BedrockRuntimeAsyncClient (streaming)  │
 │                     BedrockAgentRuntimeClient (KB)         │
@@ -66,7 +68,7 @@ Client (curl / Postman / UI)
 
 | API | Bedrock call | Used by |
 |-----|-------------|---------|
-| Converse API | `client.converse()` | Chat, Summarization, RAG generation, Document Analysis, Code Generation |
+| Converse API | `client.converse()` | Chat, Summarization, RAG generation, Document Analysis, Code Generation, Agent (tool loop) |
 | ConverseStream API | `asyncClient.converseStream()` | Streaming Chat |
 | InvokeModel API | `client.invokeModel()` | Embeddings, RAG chunk embedding |
 | Agent Runtime API | `agentRuntimeClient.retrieveAndGenerate()` / `.retrieve()` | Managed Knowledge Bases |
@@ -1782,6 +1784,164 @@ curl http://localhost:8080/api/kb/health
 
 ---
 
+## API — Agent Chat (Tool / Function Calling)
+
+The Agent API drives a multi-step **agentic loop** using the Bedrock Converse API's
+native Tool Use feature.  The model can invoke built-in tools one or more times
+before producing its final answer — no orchestration framework required.
+
+### How the loop works
+
+```
+User message
+     │
+     ▼
+  Bedrock Converse  ──(StopReason: TOOL_USE)──▶  Execute tools locally
+     ▲                                                    │
+     └──────────── ToolResult message ◀──────────────────┘
+     │
+  (StopReason: END_TURN)
+     │
+     ▼
+  Final answer returned to caller
+```
+
+Maximum 10 iterations per request (guard against runaway loops).
+
+### Built-in tools
+
+| Tool | Operations |
+|------|-----------|
+| `calculator` | `add`, `subtract`, `multiply`, `divide`, `power`, `sqrt`, `modulo` |
+| `get_current_time` | Current date/time with optional timezone (IANA) and format (`iso8601`, `date_only`, `time_only`, `human_readable`) |
+| `string_utils` | `uppercase`, `lowercase`, `reverse`, `word_count`, `char_count`, `trim` |
+| `unit_converter` | Temperature (°C / °F / K), Length (m / ft / in / km / mi), Weight (kg / lb / g / oz) |
+
+---
+
+### `POST /api/agent/chat`
+
+Run the agentic loop and receive the model's final answer together with a
+complete log of every tool invocation.
+
+#### Request
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `message` | `string` | Yes | User's question or task (max 100 000 chars) |
+| `modelId` | `string` | No | Override the default model for this request |
+| `systemPrompt` | `string` | No | Override the default agent system prompt |
+| `conversationHistory` | `ChatMessage[]` | No | Prior turns for multi-turn agent sessions |
+| `enabledTools` | `string[]` | No | Restrict to a subset of tools (omit to enable all) |
+
+#### Response
+
+```json
+{
+  "reply":      "1234 × 5678 = 7,006,652.",
+  "modelId":    "amazon.nova-lite-v1:0",
+  "iterations": 2,
+  "toolCalls": [
+    {
+      "toolName": "calculator",
+      "input":    { "operation": "multiply", "a": 1234, "b": 5678 },
+      "output":   "7006652"
+    }
+  ],
+  "usage": { "inputTokens": 312, "outputTokens": 48, "totalTokens": 360 },
+  "timestamp": "2025-04-18T00:00:00Z"
+}
+```
+
+- `iterations` — number of Bedrock round-trips (1 means no tools were called)
+- `toolCalls` — ordered list of every tool the agent invoked, with inputs and outputs
+- `usage` — token counts aggregated across **all** iterations
+
+#### Examples
+
+**Math question (calculator tool):**
+```bash
+curl -X POST http://localhost:8080/api/agent/chat \
+     -H "Content-Type: application/json" \
+     -d '{ "message": "What is 1234 multiplied by 5678?" }'
+```
+
+**Unit conversion:**
+```bash
+curl -X POST http://localhost:8080/api/agent/chat \
+     -H "Content-Type: application/json" \
+     -d '{ "message": "Convert 100 pounds to kilograms." }'
+```
+
+**Current time in a timezone:**
+```bash
+curl -X POST http://localhost:8080/api/agent/chat \
+     -H "Content-Type: application/json" \
+     -d '{ "message": "What time is it right now in Tokyo?" }'
+```
+
+**String manipulation:**
+```bash
+curl -X POST http://localhost:8080/api/agent/chat \
+     -H "Content-Type: application/json" \
+     -d '{ "message": "Reverse the string \"Hello, World!\" and count its words." }'
+```
+
+**Restrict available tools:**
+```bash
+curl -X POST http://localhost:8080/api/agent/chat \
+     -H "Content-Type: application/json" \
+     -d '{
+           "message": "What is 2 to the power of 10?",
+           "enabledTools": ["calculator"]
+         }'
+```
+
+**Multi-turn agent session:**
+```bash
+# Turn 1
+RESP=$(curl -s -X POST http://localhost:8080/api/agent/chat \
+  -H "Content-Type: application/json" \
+  -d '{ "message": "What is 100 Celsius in Fahrenheit?" }')
+
+echo $RESP | jq .reply
+
+# Turn 2 — carry history forward
+curl -X POST http://localhost:8080/api/agent/chat \
+     -H "Content-Type: application/json" \
+     -d "{
+           \"message\": \"And what is that in Kelvin?\",
+           \"conversationHistory\": $(echo $RESP | jq '[{role:\"user\",content:\"What is 100 Celsius in Fahrenheit?\"},{role:\"assistant\",content:.reply}]')
+         }"
+```
+
+---
+
+### `GET /api/agent/tools`
+
+List all built-in tools and their descriptions.
+
+```bash
+curl http://localhost:8080/api/agent/tools
+```
+
+```json
+{
+  "calculator":      "Arithmetic and math operations: add, subtract, multiply, divide, power, sqrt, modulo",
+  "get_current_time": "Get the current date/time, optionally in a specific timezone and format",
+  "string_utils":    "Text transformations: uppercase, lowercase, reverse, word_count, char_count, trim",
+  "unit_converter":  "Unit conversions: temperature (°C/°F/K), length (m/ft/in/km/mi), weight (kg/lb/g/oz)"
+}
+```
+
+---
+
+### `GET /api/agent/health`
+
+Returns `200 OK` — `Agent service is running`
+
+---
+
 ## Project structure
 
 ```
@@ -1800,7 +1960,8 @@ aws-bedrock-poc/
 │   │   │   │   ├── RagController.java              # /api/rag/*
 │   │   │   │   ├── DocumentAnalysisController.java # /api/analysis/*
 │   │   │   │   ├── CodeGenerationController.java   # /api/code/*
-│   │   │   │   └── KnowledgeBaseController.java    # /api/kb/*
+│   │   │   │   ├── KnowledgeBaseController.java    # /api/kb/*
+│   │   │   │   └── AgentController.java            # /api/agent/*
 │   │   │   ├── service/
 │   │   │   │   ├── ChatService.java                # Blocking Converse API
 │   │   │   │   ├── StreamingChatService.java       # ConverseStream + SseEmitter
@@ -1810,7 +1971,8 @@ aws-bedrock-poc/
 │   │   │   │   ├── DocumentStore.java              # Thread-safe in-memory vector store
 │   │   │   │   ├── DocumentAnalysisService.java    # Sentiment, NER, key phrases, classification, language
 │   │   │   │   ├── CodeGenerationService.java      # Generate, explain, review, convert, fix
-│   │   │   │   └── KnowledgeBaseService.java       # Managed KB: RetrieveAndGenerate + Retrieve
+│   │   │   │   ├── KnowledgeBaseService.java       # Managed KB: RetrieveAndGenerate + Retrieve
+│   │   │   │   └── AgentService.java               # Agentic loop: tool definitions, dispatch, result handling
 │   │   │   ├── model/
 │   │   │   │   ├── ChatMessage.java                # role + content pair
 │   │   │   │   ├── ChatRequest.java                # Chat POST body
@@ -1846,7 +2008,10 @@ aws-bedrock-poc/
 │   │   │   │   ├── KbQueryRequest.java             # Managed KB: question + session + topK
 │   │   │   │   ├── KbQueryResponse.java            # Managed KB: answer + citations (with Citation inner class)
 │   │   │   │   ├── KbRetrieveRequest.java          # Managed KB: retrieve-only request
-│   │   │   │   └── KbRetrieveResponse.java         # Managed KB: chunks + scores (with RetrievedChunk inner class)
+│   │   │   │   ├── KbRetrieveResponse.java         # Managed KB: chunks + scores (with RetrievedChunk inner class)
+│   │   │   │   ├── AgentRequest.java               # Agent POST body (message, tools, history)
+│   │   │   │   ├── AgentResponse.java              # Agent response (reply, toolCalls, iterations, usage)
+│   │   │   │   └── ToolCallRecord.java             # Single tool invocation log (name, input, output)
 │   │   │   └── exception/
 │   │   │       ├── BedrockException.java           # Bedrock API errors
 │   │   │       └── GlobalExceptionHandler.java     # RFC 7807 error responses
@@ -1860,7 +2025,8 @@ aws-bedrock-poc/
 │           ├── RagServiceTest.java                 # 12 tests — RAG (mocked)
 │           ├── DocumentAnalysisServiceTest.java    # 12 tests — Document Analysis (mocked)
 │           ├── CodeGenerationServiceTest.java      # 16 tests — Code Generation (mocked)
-│           └── KnowledgeBaseServiceTest.java       # 11 tests — Managed KB (mocked)
+│           ├── KnowledgeBaseServiceTest.java       # 11 tests — Managed KB (mocked)
+│           └── AgentServiceTest.java               # 26 tests — Agent tool loop (mocked)
 ├── .vscode/
 │   └── launch.json                                 # AWS credentials (gitignored)
 ├── .gitignore
@@ -1879,7 +2045,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 mvn test
 All tests mock the Bedrock client — no AWS credentials or network access required.
 
 ```
-Tests run: 73, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 99, Failures: 0, Errors: 0, Skipped: 0
 ```
 
 ---
@@ -1920,6 +2086,6 @@ Tests run: 73, Failures: 0, Errors: 0, Skipped: 0
 | 6 | Document Analysis (sentiment, NER, key phrases, classification, language) | ✅ Done |
 | 7 | Code Generation (generate, explain, review, convert, fix) | ✅ Done |
 | 8 | RAG with Bedrock Knowledge Bases (managed) | ✅ Done |
-| 9 | Agents with tool / function calling | Planned |
+| 9 | Agents with tool / function calling | ✅ Done |
 | 10 | Image Generation | Planned |
 | 11 | Prompt Flows | Planned |
